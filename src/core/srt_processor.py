@@ -185,6 +185,72 @@ class SrtProcessor:
             self.log(f"警告: LLM片段 \"{text_segment}\" (清理后: \"{segment_clean}\") 与ASR词语的对齐相似度较低 ({best_match_ratio:.2f})。ASR匹配文本: \"{matched_text_preview}\"")
         return best_match_words_ts_objects, best_match_end_index, best_match_ratio
 
+    # --- 结束时间修正 辅助函数 ---
+    def _apply_end_time_correction(self, segment_words: List[TimestampedWord], raw_end_time: float, segment_start_time: float) -> float:
+        """
+        应用结束时间修正逻辑（检查词间空隙、倒二词时长、末尾词时长）。
+        """
+        if not segment_words:
+            return raw_end_time
+
+        duration_threshold = 0.5  # 异常时长阈值 (0.5s)
+        gap_threshold = 0.6       # 异常空隙阈值 (0.6s)
+        correction_padding = 0.6  # 修正时使用的“留白” (0.6s)
+        
+        # 检查1 (空隙优先): 检查倒数第二个词和最后一个词之间的“空隙”
+        if len(segment_words) > 1:
+            last_word = segment_words[-1]
+            word_before_last = segment_words[-2]
+            
+            gap_duration = last_word.start_time - word_before_last.end_time
+            
+            if gap_duration > gap_threshold:
+                self.log(f"检测到词间不合理空隙 ({(gap_duration):.2f}s) 于 '{word_before_last.text}' 和 '{last_word.text}' 之间。")
+                self.log(f"    -> 原始结束时间: {raw_end_time:.3f}")
+                # 以“倒二词”的 *开始* 时间为基准
+                new_end_time = word_before_last.start_time + correction_padding
+                self.log(f"    -> 修正后结束时间: {new_end_time:.3f} (基于 倒二词.start + {correction_padding}s)")
+                
+                # 安全检查
+                if new_end_time < segment_start_time:
+                    return segment_start_time + correction_padding
+                return new_end_time # 命中规则，立即返回
+
+        # 检查2 (倒二词时长): (仅在“空隙”干净时才执行此检查)
+        if len(segment_words) > 1:
+            word_before_last = segment_words[-2]
+            word_before_last_duration = word_before_last.end_time - word_before_last.start_time
+            
+            if word_before_last_duration > duration_threshold:
+                self.log(f"检测到倒二词时长不合理 ({(word_before_last_duration):.2f}s) 于 '{word_before_last.text}'。")
+                self.log(f"    -> 原始结束时间: {raw_end_time:.3f}")
+                new_end_time = word_before_last.start_time + correction_padding
+                self.log(f"    -> 修正后结束时间: {new_end_time:.3f} (基于 倒二词.start + {correction_padding}s)")
+                
+                # 安全检查
+                if new_end_time < segment_start_time:
+                    return segment_start_time + correction_padding
+                return new_end_time # 命中规则，立即返回
+
+        # 检查3 (末尾词时长): (仅在“空隙”和“倒二词”都干净时才执行此检查)
+        last_word = segment_words[-1]
+        last_word_duration = last_word.end_time - last_word.start_time
+        
+        if last_word_duration > duration_threshold:
+            self.log(f"检测到末尾词时长不合理 ({(last_word_duration):.2f}s) 于 '{last_word.text}'。")
+            self.log(f"    -> 原始结束时间: {raw_end_time:.3f}")
+            new_end_time = last_word.start_time + correction_padding
+            self.log(f"    -> 修正后结束时间: {new_end_time:.3f} (基于 末尾词.start + {correction_padding}s)")
+
+            # 安全检查
+            if new_end_time < segment_start_time:
+                return segment_start_time + correction_padding
+            return new_end_time # 命中规则
+
+        # 如果所有检查都通过，返回原始时间
+        return raw_end_time
+    # --- 辅助函数 结束 ---
+
     def split_long_sentence(self, sentence_text: str, sentence_words: List[TimestampedWord],
                             original_start_time: float, original_end_time: float
                            ) -> List[SubtitleEntry]:
@@ -214,12 +280,21 @@ class SrtProcessor:
             current_segment_duration = current_segment_end_time - current_segment_start_time
             current_segment_len_chars = len(current_segment_text)
             if current_segment_duration <= self.max_duration and current_segment_len_chars <= self.max_chars_per_line:
-                final_seg_end_time = current_segment_end_time
-                if current_segment_duration < self.min_duration_target:
+                
+                # 应用结束时间修正 (最后一段)
+                final_seg_end_time = self._apply_end_time_correction(words_to_process, current_segment_end_time, current_segment_start_time)
+
+                # (重新计算修正后的时长)
+                current_segment_duration_corrected = final_seg_end_time - current_segment_start_time
+
+                if current_segment_duration_corrected < self.min_duration_target:
                     final_seg_end_time = current_segment_start_time + self.min_duration_target
-                if current_segment_duration < app_config.MIN_DURATION_ABSOLUTE:
+                if current_segment_duration_corrected < app_config.MIN_DURATION_ABSOLUTE:
                     final_seg_end_time = current_segment_start_time + app_config.MIN_DURATION_ABSOLUTE
-                final_seg_end_time = max(final_seg_end_time, current_segment_end_time)
+                
+                # (已注释掉) 确保修正后的时间不会被原始时间覆盖
+                # final_seg_end_time = max(final_seg_end_time, current_segment_end_time) 
+
                 final_seg_end_time = max(final_seg_end_time, current_segment_start_time + 0.001)
                 entries.append(SubtitleEntry(0, current_segment_start_time, final_seg_end_time, current_segment_text, list(words_to_process)))
                 break 
@@ -245,6 +320,10 @@ class SrtProcessor:
                     if not first_segment_words: continue
                     first_segment_start_time = first_segment_words[0].start_time
                     first_segment_end_time = first_segment_words[-1].end_time
+                    
+                    # 应用结束时间修正 (检查分割点)
+                    first_segment_end_time = self._apply_end_time_correction(first_segment_words, first_segment_end_time, first_segment_start_time)
+
                     first_segment_duration = first_segment_end_time - first_segment_start_time
                     first_segment_char_len = len("".join(w.text for w in first_segment_words))
                     if first_segment_duration >= self.min_duration_target and \
@@ -260,19 +339,39 @@ class SrtProcessor:
                 words_for_this_sub_entry = words_to_process[:best_split_index + 1]
                 sub_text = "".join([w.text for w in words_for_this_sub_entry])
                 sub_start_time = words_for_this_sub_entry[0].start_time
-                sub_end_time = words_for_this_sub_entry[-1].end_time
-                if (sub_end_time - sub_start_time) < self.min_duration_target: sub_end_time = sub_start_time + self.min_duration_target
-                if (sub_end_time - sub_start_time) < app_config.MIN_DURATION_ABSOLUTE: sub_end_time = sub_start_time + app_config.MIN_DURATION_ABSOLUTE
-                sub_end_time = max(sub_end_time, words_for_this_sub_entry[-1].end_time)
+                sub_end_time = words_for_this_sub_entry[-1].end_time 
+                
+                # 应用结束时间修正 (创建分割条目)
+                sub_end_time = self._apply_end_time_correction(words_for_this_sub_entry, sub_end_time, sub_start_time)
+
+                # (重新计算修正后的时长)
+                sub_duration_corrected = sub_end_time - sub_start_time
+
+                if (sub_duration_corrected) < self.min_duration_target: sub_end_time = sub_start_time + self.min_duration_target
+                if (sub_duration_corrected) < app_config.MIN_DURATION_ABSOLUTE: sub_end_time = sub_start_time + app_config.MIN_DURATION_ABSOLUTE
+                
+                # (已注释掉) 确保修正后的时间不会被原始时间覆盖
+                # sub_end_time = max(sub_end_time, words_for_this_sub_entry[-1].end_time) 
+
                 sub_end_time = max(sub_end_time, sub_start_time + 0.001)
                 entries.append(SubtitleEntry(0, sub_start_time, sub_end_time, sub_text, words_used=words_for_this_sub_entry))
                 words_to_process = words_to_process[best_split_index + 1:]
             else: 
                 self.log(f"警告: 无法在片段 '{current_segment_text[:50]}...' 中找到满足所有条件的分割点。将其作为一个（可能超限的）条目处理。")
                 final_seg_end_time_fallback = current_segment_end_time
-                if current_segment_duration < self.min_duration_target: final_seg_end_time_fallback = current_segment_start_time + self.min_duration_target
-                if current_segment_duration < app_config.MIN_DURATION_ABSOLUTE: final_seg_end_time_fallback = current_segment_start_time + app_config.MIN_DURATION_ABSOLUTE
-                final_seg_end_time_fallback = max(final_seg_end_time_fallback, current_segment_end_time)
+                
+                # 应用结束时间修正 (无法分割的回退)
+                final_seg_end_time_fallback = self._apply_end_time_correction(words_to_process, final_seg_end_time_fallback, current_segment_start_time)
+
+                # (重新计算修正后的时长)
+                current_segment_duration_corrected = final_seg_end_time_fallback - current_segment_start_time
+
+                if current_segment_duration_corrected < self.min_duration_target: final_seg_end_time_fallback = current_segment_start_time + self.min_duration_target
+                if current_segment_duration_corrected < app_config.MIN_DURATION_ABSOLUTE: final_seg_end_time_fallback = current_segment_start_time + app_config.MIN_DURATION_ABSOLUTE
+                
+                # (已注释掉) 确保修正后的时间不会被原始时间覆盖
+                # final_seg_end_time_fallback = max(final_seg_end_time_fallback, current_segment_end_time)
+                
                 final_seg_end_time_fallback = max(final_seg_end_time_fallback, current_segment_start_time + 0.001)
                 entry = SubtitleEntry(0, current_segment_start_time, final_seg_end_time_fallback, current_segment_text, list(words_to_process))
                 entry.is_intentionally_oversized = True 
@@ -327,6 +426,10 @@ class SrtProcessor:
                 self.log(f"警告: LLM片段 \"{entry_text_from_llm[:30]}...\" 匹配到的所有ASR词元均为空或空格。将使用原始匹配边界。")
                 entry_start_time = matched_words[0].start_time; entry_end_time = matched_words[-1].end_time
                 actual_words_for_entry = matched_words
+            
+            # 应用结束时间修正 (主流程)
+            entry_end_time = self._apply_end_time_correction(actual_words_for_entry, entry_end_time, entry_start_time)
+
             entry_duration = max(0.001, entry_end_time - entry_start_time)
             text_len = len(entry_text_from_llm)
             is_audio_event = False
@@ -340,6 +443,7 @@ class SrtProcessor:
                 intermediate_entries.append(SubtitleEntry(0, entry_start_time, final_audio_event_end_time, audio_event_text_content, actual_words_for_entry, match_ratio))
             elif entry_duration > self.max_duration or text_len > self.max_chars_per_line:
                 self.log(f"   片段超限，需分割: \"{entry_text_from_llm[:50]}...\" (时长: {entry_duration:.2f}s, 字符: {text_len})")
+                # 此处 entry_end_time 已经是被修正过的了
                 split_sub_entries = self.split_long_sentence(entry_text_from_llm, actual_words_for_entry, entry_start_time, entry_end_time)
                 for sub_entry in split_sub_entries: sub_entry.alignment_ratio = match_ratio
                 intermediate_entries.extend(split_sub_entries)
@@ -349,10 +453,11 @@ class SrtProcessor:
                 original_end_of_last_actual_word = actual_words_for_entry[-1].end_time if actual_words_for_entry else entry_start_time
                 max_allowed_extension = original_end_of_last_actual_word + 0.5 
                 final_short_entry_end_time = min(final_short_entry_end_time, max_allowed_extension)
-                final_short_entry_end_time = max(final_short_entry_end_time, entry_end_time) 
+                final_short_entry_end_time = max(final_short_entry_end_time, entry_end_time) # entry_end_time 可能是被修正过的
                 final_short_entry_end_time = max(final_short_entry_end_time, entry_start_time + 0.001)
                 intermediate_entries.append(SubtitleEntry(0, entry_start_time, final_short_entry_end_time, entry_text_from_llm, actual_words_for_entry, match_ratio))
             else:
+                # 此处 entry_end_time 已经是被修正过的了
                 intermediate_entries.append(SubtitleEntry(0, entry_start_time, entry_end_time, entry_text_from_llm, actual_words_for_entry, match_ratio))
             completed_steps_phase1 += 1
             self._emit_srt_progress(int( (completed_steps_phase1 / total_llm_segments) * WEIGHT_ALIGN ), 100)
@@ -405,6 +510,21 @@ class SrtProcessor:
             if not self._is_worker_running(): self.log("任务被用户中断(最终格式化阶段)。"); return None
             self.log(f"   格式化条目 {entry_idx+1}/{total_merged_final_entries}: \"{current_entry.text[:30]}...\"")
             if last_processed_entry_object is not None: 
+                
+                # 应用开始时间修正 (提前0.25s)
+                # 必须在应用 default_gap_ms 之前检查原始间隙
+                raw_gap = current_entry.start_time - last_processed_entry_object.end_time
+                if raw_gap > 0.5:
+                    self.log(f"检测到字幕间 > 0.5s 的空隙 ({raw_gap:.2f}s)。")
+                    new_start_time = current_entry.start_time - 0.25
+                    # 安全检查: 确保提前后不会与上一句重叠
+                    if new_start_time > last_processed_entry_object.end_time:
+                        self.log(f"    -> 将开始时间 {current_entry.start_time:.3f} 提前至 {new_start_time:.3f}")
+                        current_entry.start_time = new_start_time
+                    else:
+                        self.log(f"    -> 想要提前开始时间，但会与上一句重叠({new_start_time:.3f} vs {last_processed_entry_object.end_time:.3f})，跳过。")
+                
+                # (继续执行原有的 100ms 间隙逻辑)
                 gap_seconds = self.default_gap_ms / 1000.0
                 if current_entry.start_time < last_processed_entry_object.end_time + gap_seconds:
                     new_previous_end_time = current_entry.start_time - gap_seconds
