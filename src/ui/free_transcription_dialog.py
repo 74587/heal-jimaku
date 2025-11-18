@@ -133,6 +133,10 @@ class FreeTranscriptionDialog(QDialog):
         num_speakers_layout.addWidget(self.num_speakers_combo, 6)
         main_layout.addLayout(num_speakers_layout)
 
+        # 确保语言和说话人数控件始终可用
+        self.language_combo.setEnabled(True)
+        self.num_speakers_combo.setEnabled(True)
+
         # 创建音频事件标记复选框
         checkbox_layout = QHBoxLayout()
         checkbox_layout.addStretch(1)
@@ -164,6 +168,17 @@ class FreeTranscriptionDialog(QDialog):
         self._apply_styles()
         self.resize(600, 420)
 
+        # 检查是否已有批量文件需要处理
+        if hasattr(current_settings, 'get') and current_settings.get('audio_files'):
+            # 如果传入设置中已有批量文件，进行相应的UI设置
+            self.selected_audio_files = current_settings.get('audio_files', [])
+            if self.selected_audio_files:
+                self.selected_audio_file_path = ""  # 清空单个文件路径
+                self.audio_file_path_entry.setText(f"已选择 {len(self.selected_audio_files)} 个音频文件")
+                # 确保批量模式下控件是可用的
+                self.language_combo.setEnabled(True)
+                self.num_speakers_combo.setEnabled(True)
+
     def _browse_audio_file(self):
         """浏览并选择音频文件，支持单文件和多文件选择模式"""
         start_dir = os.path.dirname(self.selected_audio_file_path) \
@@ -187,11 +202,12 @@ class FreeTranscriptionDialog(QDialog):
                 self.selected_audio_files = filepaths
                 self.selected_audio_file_path = ""  # 清空单个文件路径
                 self.audio_file_path_entry.setText(f"已选择 {len(filepaths)} 个音频文件")
-                # 批量音频模式下强制使用自动检测，禁用语言和说话人数选择
-                self.language_combo.setCurrentText("自动检测")
-                self.num_speakers_combo.setCurrentText("自动检测")
-                self.language_combo.setEnabled(False)
-                self.num_speakers_combo.setEnabled(False)
+                # 批量音频模式下允许用户调整参数，不强制禁用选项
+                # 保持用户之前的选择或使用默认值
+                # 只有在用户明确需要时才使用自动检测
+                # 确保控件在批量模式下是可用的
+                self.language_combo.setEnabled(True)
+                self.num_speakers_combo.setEnabled(True)
 
     def _accept_settings(self):
         """验证并应用用户的设置配置"""

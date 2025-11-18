@@ -1451,15 +1451,11 @@ class HealJimakuApp(QMainWindow):
             # 确保配置中正确设置了当前配置ID
             if CURRENT_PROFILE_ID_KEY not in self.config:
                 self.config[CURRENT_PROFILE_ID_KEY] = DEFAULT_CURRENT_PROFILE_ID
-                print(f"[DEBUG] 设置当前配置ID为默认值: {DEFAULT_CURRENT_PROFILE_ID}")
-            else:
-                print(f"[DEBUG] 当前配置ID: {self.config[CURRENT_PROFILE_ID_KEY]}")
 
             # 确保配置列表中有默认配置
             profiles = self.config.get(LLM_PROFILES_KEY, {}).get("profiles", [])
             has_default_config = any(p.get("id") == DEFAULT_CURRENT_PROFILE_ID for p in profiles)
             if not has_default_config:
-                print(f"[DEBUG] 配置列表中没有默认配置，创建默认配置")
                 default_profile = {
                     "id": DEFAULT_CURRENT_PROFILE_ID,
                     "name": "DeepSeek",
@@ -1473,14 +1469,12 @@ class HealJimakuApp(QMainWindow):
                 }
                 profiles.append(default_profile)
                 self.config[LLM_PROFILES_KEY] = {"profiles": profiles}
-                print(f"[DEBUG] 已创建默认配置: {DEFAULT_CURRENT_PROFILE_ID}")
 
             # 使用简化的LLM配置系统，显示当前配置的API Key（默认配置=当前配置）
             if self.api_key_entry:
                 current_profile = app_config.get_current_llm_profile(self.config)
                 api_key_val = current_profile.get("api_key", "")
                 self.api_key_entry.setText(api_key_val)
-                print(f"[DEBUG] 初始化时加载的API Key: {api_key_val[:10] if api_key_val else 'None'}")
 
                 # 根据当前配置中是否有API Key来设置复选框状态
                 has_saved_api_key = bool(api_key_val)
@@ -1849,11 +1843,6 @@ class HealJimakuApp(QMainWindow):
         if current_ui_api_key or current_ui_api_key == "":
             # 使用简化的同步方法
             self._sync_api_key_to_current_profile(current_ui_api_key)
-            # 添加调试信息
-            if current_ui_api_key:
-                print(f"[DEBUG] API Key已同步到配置: {current_ui_api_key[:10]}...")
-        # 可以选择性地记录日志，避免频繁输出
-        # self.log_message(f"API Key 已更新到当前配置")
 
     def _sync_api_key_between_windows(self, from_main_to_advanced=True):
         """双向同步API Key，支持从主窗口到配置或从配置到主窗口"""
@@ -2115,15 +2104,11 @@ class HealJimakuApp(QMainWindow):
         # 获取当前配置（在简化设计中，这就是默认配置）
         current_profile = app_config.get_current_llm_profile(self.config)
         if not current_profile:
-            print(f"[DEBUG] 无法获取当前配置")
             return
 
         current_profile_id = current_profile.get("id")
         if not current_profile_id:
-            print(f"[DEBUG] 当前配置没有ID")
             return
-
-        print(f"[DEBUG] 同步API Key到配置ID: {current_profile_id}")
 
         # 正确的配置结构：llm_profiles.profiles 是一个数组
         llm_profiles_config = self.config.get("llm_profiles", {})
@@ -2133,14 +2118,10 @@ class HealJimakuApp(QMainWindow):
         for i, profile in enumerate(profiles_list):
             if profile.get("id") == current_profile_id:
                 # 更新API Key（允许空字符串，用于清除API Key）
-                old_api_key = profile.get("api_key", "")
                 profiles_list[i]["api_key"] = api_key
                 llm_profiles_config["profiles"] = profiles_list
                 self.config["llm_profiles"] = llm_profiles_config
-                print(f"[DEBUG] 配置已更新: {old_api_key[:10] if old_api_key else 'None'} -> {api_key[:10] if api_key else 'None'}")
                 break
-        else:
-            print(f"[DEBUG] 未找到配置ID: {current_profile_id}")
 
     def handle_free_transcription_button_click(self):
         """处理免费转录按钮点击事件，根据当前模式执行不同操作"""
@@ -2228,20 +2209,16 @@ class HealJimakuApp(QMainWindow):
 
         # 获取当前LLM配置（使用新的多配置系统）
         current_profile = app_config.get_current_llm_profile(self.config)
-        print(f"[DEBUG] 开始转换时的当前配置: {current_profile}")
 
         current_ui_api_key = self.api_key_entry.text().strip()
-        print(f"[DEBUG] UI中的API Key: {current_ui_api_key[:10] if current_ui_api_key else 'None'}")
 
         if current_ui_api_key:
             effective_api_key = current_ui_api_key
             # 同步API Key到当前配置
             self._sync_api_key_between_windows(from_main_to_advanced=True)
-            print(f"[DEBUG] 同步后的配置: {app_config.get_current_llm_profile(self.config)}")
 
             # 无论是否勾选记住API Key，都要将API Key保存到当前配置中（以便转换使用）
             # 但是记住API Key控制的是程序重启后是否仍然保留
-            print(f"[DEBUG] 保存API Key到当前配置: {effective_api_key[:10]}...")
             self._sync_api_key_to_current_profile(effective_api_key)
 
             if self.remember_api_key_checkbox.isChecked():
@@ -2950,12 +2927,12 @@ class HealJimakuApp(QMainWindow):
             dialog.num_speakers_combo.setEnabled(True)
         else:
             dialog.selected_audio_files = media_files
+            dialog.selected_audio_file_path = ""  # 清空单个文件路径
             dialog.audio_file_path_entry.setText(f"已选择 {len(media_files)} 个音频文件")
-            # 批量文件模式下强制使用自动检测，禁用语言和说话人数选择
-            dialog.language_combo.setCurrentText("自动检测")
-            dialog.num_speakers_combo.setCurrentText("自动检测")
-            dialog.language_combo.setEnabled(False)
-            dialog.num_speakers_combo.setEnabled(False)
+            # 批量文件模式下允许用户调整参数，不强制禁用选项
+            # 保持用户之前的选择或使用默认值
+            dialog.language_combo.setEnabled(True)
+            dialog.num_speakers_combo.setEnabled(True)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             # 设置已确认，处理在 _apply_media_drop_settings 中进行

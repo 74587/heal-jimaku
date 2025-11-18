@@ -1327,6 +1327,19 @@ class LlmAdvancedSettingsDialog(QDialog):
         # 获取配置名称用于显示（在重新加载UI之前）
         profile_name = current_item.text().replace(" (默认)", "")  # 移除旧的默认标识
 
+        # 检查主窗口的"记住API Key"复选框状态
+        should_remember_api_key = True
+        if self.parent_window and hasattr(self.parent_window, 'remember_api_key_checkbox'):
+            should_remember_api_key = self.parent_window.remember_api_key_checkbox.isChecked()
+
+        # 如果主窗口没有勾选"记住API Key"，则清除当前默认配置的API Key
+        if not should_remember_api_key:
+            # 找到当前的默认配置并清除其API Key
+            for i, profile in enumerate(self.profiles):
+                if profile.get("is_default", False):
+                    self.profiles[i]["api_key"] = ""
+                    break
+
         # 设置为默认（简化设计：这同时改变当前使用的配置）
         self.config = config.set_default_llm_profile(self.config, profile_id)
 
@@ -1352,7 +1365,10 @@ class LlmAdvancedSettingsDialog(QDialog):
 
         # 输出日志到主界面
         if self.parent_window and hasattr(self.parent_window, 'log_message'):
-            self.parent_window.log_message(f"✅ 已将「{profile_name}」设为默认LLM配置")
+            if should_remember_api_key:
+                self.parent_window.log_message(f"✅ 已将「{profile_name}」设为默认LLM配置")
+            else:
+                self.parent_window.log_message(f"✅ 已将「{profile_name}」设为默认LLM配置（已清除旧配置的API Key）")
 
     def _generate_unique_name(self, name_prefix: str) -> str:
         """生成唯一的配置名称，避免重名"""
