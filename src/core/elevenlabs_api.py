@@ -1,3 +1,13 @@
+"""
+ElevenLabs API 客户端模块
+
+提供音频转文字服务的API客户端实现，支持多种音频格式的转录处理。
+包含文件信息获取、API请求处理、错误处理等功能。
+
+作者: Heal-Jimaku Project
+版本: 1.3.0
+"""
+
 import requests
 import json
 import os
@@ -8,11 +18,12 @@ from typing import Optional, Any, Dict, List, Tuple
 
 from mutagen import File as MutagenFile
 
-ELEVENLABS_STT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text"
+# ElevenLabs API 常量定义
+ELEVENLABS_STT_API_URL = "https://api.elevenlabs.io/v1/speech-to-text"  # API 端点URL
 ELEVENLABS_STT_PARAMS = {
-    "allow_unauthenticated": "1"
+    "allow_unauthenticated": "1"  # 允许未认证访问的参数
 }
-DEFAULT_STT_MODEL_ID = "scribe_v1"
+DEFAULT_STT_MODEL_ID = "scribe_v1"  # 默认使用的转录模型ID
 DEFAULT_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -45,6 +56,8 @@ DEFAULT_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.2277.128",
     "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.5735.0 Safari/537.36"
 ]
+
+# 默认Accept-Language列表，用于模拟不同语言偏好
 DEFAULT_ACCEPT_LANGUAGES = [
     "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7,ja;q=0.6",
     "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,ja;q=0.5",
@@ -74,9 +87,14 @@ DEFAULT_ACCEPT_LANGUAGES = [
 ]
 
 class ElevenLabsSTTClient:
+    """
+    ElevenLabs语音转文本API客户端
+
+    负责与ElevenLabs STT API交互，提供音频转录功能，包括音频信息获取、
+    文件上传、转录请求处理和结果解析。支持多语言、说话人分离和音频事件标记。
+    """
     def __init__(self, signals_forwarder: Optional[Any] = None):
         self._signals = signals_forwarder
-        # _is_free_tier flag is removed as we assume free tier for now
 
     def _log(self, message: str):
         if self._signals and hasattr(self._signals, 'log_message') and hasattr(self._signals.log_message, 'emit'):
@@ -101,8 +119,7 @@ class ElevenLabsSTTClient:
 
             file_size_bytes = os.path.getsize(audio_file_path)
             file_size_mb = file_size_bytes / (1024 * 1024)
-            self._log(f"  文件大小: {file_size_mb:.2f} MB")
-
+            
             audio_info = MutagenFile(audio_file_path)
             if audio_info and hasattr(audio_info, 'info') and hasattr(audio_info.info, 'length'):
                 duration_seconds = float(audio_info.info.length)
@@ -123,7 +140,6 @@ class ElevenLabsSTTClient:
                 minutes = int(duration_seconds // 60)
                 seconds = int(duration_seconds % 60)
                 milliseconds = int((duration_seconds - (minutes * 60) - seconds) * 1000)
-                self._log(f"  音频时长: {minutes:02d}分{seconds:02d}秒{milliseconds:03d}毫秒 ({duration_seconds:.3f}秒)")
             else:
                 self._log("  警告：未能获取音频时长。")
             
@@ -147,8 +163,7 @@ class ElevenLabsSTTClient:
             self._log(f"错误：音频文件 '{audio_file_path}' 未找到。")
             return None
 
-        self._log(f"开始处理文件: {os.path.basename(audio_file_path)}")
-        self.get_audio_info(audio_file_path) 
+        duration, file_size_mb = self.get_audio_info(audio_file_path) 
 
         headers = {
             "accept": "*/*",
@@ -168,8 +183,7 @@ class ElevenLabsSTTClient:
             "tag_audio_events": tag_audio_events,
             "diarize": True 
         }
-        self._log("提示: 人声分离 (Diarize) 已固定为启用，以符合免费API要求。")
-
+        
         if language_code and language_code.lower() != "auto":
             payload_data["language_code"] = language_code
         
@@ -190,12 +204,8 @@ class ElevenLabsSTTClient:
                 mime_type = mime_type_map.get(file_extension, 'application/octet-stream')
                 if mime_type == 'application/octet-stream':
                     self._log(f"  警告：未知的音频文件扩展名 '{file_extension}'，使用通用MIME类型 '{mime_type}'。")
-
                 files_data = { "file": (os.path.basename(audio_file_path), f_audio, mime_type) }
 
-                self._log(f"开始上传并请求转录 (ElevenLabs)...")
-                self._log(f"  API Payload (不含文件): {payload_data}")
-                
                 start_time = time.perf_counter()
                 response = requests.post(
                     ELEVENLABS_STT_API_URL,
@@ -245,37 +255,3 @@ class ElevenLabsSTTClient:
         # Fallback, should ideally be caught by specific exceptions above
         return None
 
-# (测试代码块保持不变，但现在它会固定使用 diarize=True 的行为)
-if __name__ == '__main__':
-    test_audio_file = "test.mp3" # 请替换为您的测试音频文件路径
-    
-    if not os.path.exists(test_audio_file):
-        print(f"测试文件 {test_audio_file} 不存在，请修改路径后重试。")
-    else:
-        print("开始测试 ElevenLabsSTTClient...")
-        client = ElevenLabsSTTClient()
-        
-        print("\n--- 测试1: 自动检测语言和说话人, 启用音频事件 ---")
-        result1 = client.transcribe_audio(test_audio_file, tag_audio_events=True)
-        if result1:
-            print(f"测试1文本摘要: {result1.get('text', '')[:100]}...")
-
-        print("\n--- 测试2: 指定日语, 2个说话人, 禁用音频事件 ---")
-        result2 = client.transcribe_audio(
-            test_audio_file,
-            language_code="ja",
-            num_speakers=2,
-            tag_audio_events=False
-        )
-        if result2:
-            print(f"测试2文本摘要: {result2.get('text', '')[:100]}...")
-        
-        print("\n--- 测试3: 自动检测语言, 自动说话人, 禁用音频事件 ---")
-        result3 = client.transcribe_audio(
-            test_audio_file,
-            tag_audio_events=False
-        )
-        if result3:
-            print(f"测试3文本摘要: {result3.get('text', '')[:100]}...")
-
-        print("\n测试完成。")

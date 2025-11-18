@@ -1,3 +1,14 @@
+"""
+转录数据解析器模块
+
+负责解析来自不同ASR（自动语音识别）服务商的JSON输出格式。
+支持 ElevenLabs、Whisper、Deepgram、AssemblyAI 等多种数据源。
+提供统一的接口将不同格式的转录数据转换为内部标准格式。
+
+作者: Heal-Jimaku Project
+版本: 1.3.0
+"""
+
 from typing import List, Optional, Literal
 import traceback
 # Corrected import: removed 'src.' prefix, or use relative if preferred for sibling modules

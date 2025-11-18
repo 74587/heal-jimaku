@@ -16,14 +16,17 @@ from utils.file_utils import resource_path
 
 
 class SettingsDialog(QDialog):
+    """SRT高级参数设置对话框，提供字幕生成相关的参数调整功能"""
     settings_applied = pyqtSignal(dict)
 
     def __init__(self, current_settings: dict, parent=None):
+        """初始化设置对话框，创建UI界面和参数控制组件"""
         super().__init__(parent)
         self.setWindowTitle("SRT高级参数设置")
         self.setModal(True)
         self.current_settings = current_settings
 
+        # 设置无边框窗口和半透明背景
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         container = QWidget(self)
@@ -35,6 +38,7 @@ class SettingsDialog(QDialog):
             }
         """)
 
+        # 布局设置
         dialog_layout = QVBoxLayout(self)
         dialog_layout.setContentsMargins(0,0,0,0)
         dialog_layout.addWidget(container)
@@ -43,18 +47,20 @@ class SettingsDialog(QDialog):
         main_layout.setContentsMargins(25, 20, 25, 20)
         main_layout.setSpacing(18)
 
+        # 颜色主题设置
         self.target_main_color = QColor(87, 128, 183)
         self.target_stroke_color = QColor(242, 234, 218)
 
+        # 创建标题栏
         title_bar_layout = QHBoxLayout()
-        title_label = CustomLabel("SRT高级参数设置") 
-        title_label.setCustomColors(main_color=self.target_main_color, stroke_color=self.target_stroke_color) 
+        title_label = CustomLabel("SRT高级参数设置")
+        title_label.setCustomColors(main_color=self.target_main_color, stroke_color=self.target_stroke_color)
         title_font = QFont('楷体', 20, QFont.Weight.Bold)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         close_button = QPushButton("×")
         close_button.setFixedSize(30, 30)
-        close_button.setObjectName("dialogCloseButton") 
+        close_button.setObjectName("dialogCloseButton")
         close_button.setToolTip("关闭")
         close_button.clicked.connect(self.reject)
         title_bar_layout.addStretch()
@@ -63,6 +69,7 @@ class SettingsDialog(QDialog):
         title_bar_layout.addWidget(close_button)
         main_layout.addLayout(title_bar_layout)
 
+        # 创建参数控制组件
         self.param_widgets = {}
         self.param_widgets['min_duration_target'] = self._create_slider_spinbox_row(
             "字幕最小持续时间 (秒):",
@@ -89,6 +96,8 @@ class SettingsDialog(QDialog):
         )
         main_layout.addLayout(self.param_widgets['default_gap_ms']['layout'])
         main_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
+
+        # 创建按钮区域
         button_layout = QHBoxLayout()
         button_layout.setSpacing(15)
         button_layout.addStretch()
@@ -108,6 +117,7 @@ class SettingsDialog(QDialog):
         self.resize(600, 480)
 
     def apply_styles(self):
+        """应用自定义样式到对话框组件"""
         qss_image_up_arrow = "none"
         qss_image_down_arrow = "none"
         up_arrow_path_str = resource_path('up_arrow.png')
@@ -117,13 +127,13 @@ class SettingsDialog(QDialog):
             qss_image_up_arrow = f"url('{up_arrow_path_str.replace(os.sep, '/')}')"
         if down_arrow_path_str and os.path.exists(down_arrow_path_str):
             qss_image_down_arrow = f"url('{down_arrow_path_str.replace(os.sep, '/')}')"
-            
+
         style = f"""
             QWidget#settingsDialogContainer {{
                 background-color: rgba(60, 60, 80, 220);
                 border-radius: 10px;
             }}
-            CustomLabel {{ 
+            CustomLabel {{
                 background-color: transparent;
             }}
             QPushButton {{
@@ -139,115 +149,102 @@ class SettingsDialog(QDialog):
 
             QPushButton#dialogCloseButton {{
                 background-color: rgba(255, 99, 71, 160); color: white;
-                border: none; border-radius: 15px; 
-                font-weight:bold; font-size: 12pt; 
+                border: none; border-radius: 15px;
+                font-weight:bold; font-size: 12pt;
                 padding: 0px; min-width: 30px; max-width:30px; min-height:30px; max-height:30px;
             }}
             QPushButton#dialogCloseButton:hover {{ background-color: rgba(255, 99, 71, 200); }}
 
-            /* --- QSlider 样式：严格使用您原始文件中的版本 --- */
             QSlider::groove:horizontal {{
                 border: 1px solid rgba(120,120,120,150);
                 background: rgba(255,255,255,60);
-                height: 10px; 
+                height: 10px;
                 border-radius: 5px;
             }}
             QSlider::handle:horizontal {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #A0A0A0, stop:1 #707070);
                 border: 1px solid #4A4A4A;
-                width: 20px; 
-                margin: -5px 0; 
+                width: 20px;
+                margin: -5px 0;
                 border-radius: 10px;
             }}
             QSlider::sub-page:horizontal {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5C8A6F, stop:1 #69CFF7); 
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5C8A6F, stop:1 #69CFF7);
                 border: 1px solid rgba(120,120,120,150);
-                height: 10px; 
+                height: 10px;
                 border-radius: 5px;
             }}
-            /* --- QSlider 样式结束 --- */
 
-            /* --- QSpinBox 和 QDoubleSpinBox 的调整 --- */
             QSpinBox, QDoubleSpinBox {{
-                background-color: rgba(255, 255, 255, 50); 
+                background-color: rgba(255, 255, 255, 50);
                 color: #EAEAEA;
-                border: 1px solid rgba(135, 206, 235, 120); 
+                border: 1px solid rgba(135, 206, 235, 120);
                 border-radius: 5px;
-                font-family: 'Microsoft YaHei'; 
-                font-size: 15pt;       /* 字体大小 */
-                min-height: 36px;      /* SpinBox 最小高度 */
-                padding-top: 2px;      
+                font-family: 'Microsoft YaHei';
+                font-size: 15pt;
+                min-height: 36px;
+                padding-top: 2px;
                 padding-bottom: 2px;
-                padding-left: 8px;     /* 文本区左内边距 */
-                padding-right: 3px;    /* 文本区右内边距，给按钮和边框之间留一点点空间 */
+                padding-left: 8px;
+                padding-right: 3px;
             }}
 
             QSpinBox::up-button, QDoubleSpinBox::up-button,
             QSpinBox::down-button, QDoubleSpinBox::down-button {{
-                subcontrol-origin: border; /* 按钮相对于SpinBox的边框定位 */
-                width: 28px;               /* 按钮宽度 */
-                
-                border: none; /* 移除按钮自身的独立边框，让它们看起来更像是SpinBox的一部分 */
-                              /* 如果需要明确的按钮边框，可以像之前那样设置 */
+                subcontrol-origin: border;
+                width: 28px;
+                border: none;
                 background-color: rgba(135, 206, 235, 110);
-                
-                /* margin: 1px; */ /* 暂时移除外边距，让按钮紧贴 */
-
-                /* cursor: pointing_hand;  <--- 移除此行，以避免控制台警告 */
             }}
-            
+
             QSpinBox::up-button, QDoubleSpinBox::up-button {{
-                 subcontrol-position: top right; 
-                 border-top-right-radius: 4px; /* 配合SpinBox的圆角 */
-                 /* 如果需要分隔线，可以设置下边框 */
-                 /* border-bottom: 1px solid rgba(100,100,100,50); */
+                 subcontrol-position: top right;
+                 border-top-right-radius: 4px;
             }}
             QSpinBox::down-button, QDoubleSpinBox::down-button {{
-                 subcontrol-position: bottom right; 
-                 border-bottom-right-radius: 4px; /* 配合SpinBox的圆角 */
-                 /* 如果需要分隔线，可以设置上边框 */
-                 border-top: 1px solid rgba(100,120,140,80); /* 尝试一个细微的分割线 */
+                 subcontrol-position: bottom right;
+                 border-bottom-right-radius: 4px;
+                 border-top: 1px solid rgba(100,120,140,80);
             }}
 
             QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
             QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
-                background-color: rgba(135, 206, 235, 190); 
+                background-color: rgba(135, 206, 235, 190);
             }}
 
             QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
                 image: {qss_image_up_arrow};
-                width: 14px; height: 14px; 
+                width: 14px; height: 14px;
             }}
             QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
                 image: {qss_image_down_arrow};
                 width: 14px; height: 14px;
             }}
-            /* --- QSpinBox 和 QDoubleSpinBox 的修改结束 --- */
         """
         self.setStyleSheet(style)
 
     def _create_slider_spinbox_row(self, label_text: str, min_val, max_val, step, decimals: int, current_val):
+        """创建滑块和数字输入框的组合行组件"""
         row_layout = QHBoxLayout()
         row_layout.setSpacing(10)
         label = CustomLabel(label_text)
         label.setFont(QFont('楷体', 16, QFont.Weight.Bold))
         label.setCustomColors(main_color=self.target_main_color, stroke_color=self.target_stroke_color)
 
+        # 根据小数位数选择合适的输入框类型
         spin_box: QWidget
         if decimals > 0:
-            spin_box = QDoubleSpinBox() 
+            spin_box = QDoubleSpinBox()
             spin_box.setDecimals(decimals)
             spin_box.setSingleStep(step) # type: ignore
         else:
-            spin_box = QSpinBox() 
+            spin_box = QSpinBox()
             spin_box.setSingleStep(int(step))
 
         spin_box.setRange(min_val, max_val) # type: ignore
         spin_box.setValue(current_val) # type: ignore
-        
-        # --- 修改点：移除 setFixedWidth，让SpinBox宽度自适应 ---
-        # spin_box.setFixedWidth(120) # 注释掉或删除这一行
 
+        # 创建滑块并处理小数精度
         slider = QSlider(Qt.Orientation.Horizontal)
         if decimals > 0:
             slider_multiplier = 10**decimals
@@ -264,6 +261,8 @@ class SettingsDialog(QDialog):
         slider.setRange(slider_min, slider_max)
         slider.setSingleStep(slider_step) # type: ignore
         slider.setValue(slider_current)
+
+        # 绑定滑块和输入框的值变化事件
         if decimals > 0:
             spin_box.valueChanged.connect(lambda value, s=slider, m=slider_multiplier: s.setValue(int(round(value * m)))) # type: ignore
             slider.valueChanged.connect(lambda value, sb=spin_box, m=slider_multiplier: sb.setValue(float(value / m))) # type: ignore
@@ -271,32 +270,18 @@ class SettingsDialog(QDialog):
             spin_box.valueChanged.connect(slider.setValue) # type: ignore
             slider.valueChanged.connect(spin_box.setValue) # type: ignore
 
-        # 恢复原始拉伸因子
-        row_layout.addWidget(label, 3) 
-        row_layout.addWidget(slider, 4) 
-        row_layout.addWidget(spin_box, 2) 
+        # 设置组件的拉伸因子
+        row_layout.addWidget(label, 3)
+        row_layout.addWidget(slider, 4)
+        row_layout.addWidget(spin_box, 2)
 
         return {"layout": row_layout, "slider": slider, "spin_box": spin_box}
 
-    def accept_settings(self):
-        new_settings = {
-            'min_duration_target': self.param_widgets['min_duration_target']['spin_box'].value(),
-            'max_duration': self.param_widgets['max_duration']['spin_box'].value(),
-            'max_chars_per_line': self.param_widgets['max_chars_per_line']['spin_box'].value(),
-            'default_gap_ms': self.param_widgets['default_gap_ms']['spin_box'].value(),
-        }
-        self.settings_applied.emit(new_settings)
-        self.accept()
-
-    def reset_settings(self):
-        self.param_widgets['min_duration_target']['spin_box'].setValue(DEFAULT_MIN_DURATION_TARGET)
-        self.param_widgets['max_duration']['spin_box'].setValue(DEFAULT_MAX_DURATION)
-        self.param_widgets['max_chars_per_line']['spin_box'].setValue(DEFAULT_MAX_CHARS_PER_LINE)
-        self.param_widgets['default_gap_ms']['spin_box'].setValue(DEFAULT_DEFAULT_GAP_MS)
-        
+    
     def mousePressEvent(self, event):
+        """鼠标按下事件，用于窗口拖拽功能"""
         if event.button() == Qt.MouseButton.LeftButton:
-            if event.position().y() < 40: 
+            if event.position().y() < 40:
                 self.drag_pos = event.globalPosition().toPoint()
                 self.is_dragging_dialog = True
                 event.accept()
@@ -305,6 +290,7 @@ class SettingsDialog(QDialog):
                 super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        """鼠标移动事件，实现窗口拖拽"""
         if hasattr(self, 'is_dragging_dialog') and self.is_dragging_dialog and event.buttons() == Qt.MouseButton.LeftButton:
             self.move(self.pos() + event.globalPosition().toPoint() - self.drag_pos)
             self.drag_pos = event.globalPosition().toPoint()
@@ -313,6 +299,30 @@ class SettingsDialog(QDialog):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        """鼠标释放事件，结束窗口拖拽"""
         if hasattr(self, 'is_dragging_dialog'):
             self.is_dragging_dialog = False
         super().mouseReleaseEvent(event)
+
+    
+    def accept_settings(self):
+        """应用设置并关闭对话框"""
+        # SRT设置
+        srt_settings = {
+            'min_duration_target': self.param_widgets['min_duration_target']['spin_box'].value(),
+            'max_duration': self.param_widgets['max_duration']['spin_box'].value(),
+            'max_chars_per_line': self.param_widgets['max_chars_per_line']['spin_box'].value(),
+            'default_gap_ms': self.param_widgets['default_gap_ms']['spin_box'].value(),
+        }
+
+        # 发送设置应用信号
+        self.settings_applied.emit(srt_settings)
+        self.accept()
+
+    def reset_settings(self):
+        """重置所有设置为默认值"""
+        # 重置SRT设置
+        self.param_widgets['min_duration_target']['spin_box'].setValue(DEFAULT_MIN_DURATION_TARGET)
+        self.param_widgets['max_duration']['spin_box'].setValue(DEFAULT_MAX_DURATION)
+        self.param_widgets['max_chars_per_line']['spin_box'].setValue(DEFAULT_MAX_CHARS_PER_LINE)
+        self.param_widgets['default_gap_ms']['spin_box'].setValue(DEFAULT_DEFAULT_GAP_MS)

@@ -17,24 +17,28 @@ from config import (
 
 
 class FreeTranscriptionDialog(QDialog):
+    """免费转录设置对话框，提供音频文件选择和转录参数配置功能"""
     settings_confirmed = pyqtSignal(dict)
 
     def __init__(self, current_settings: dict, parent=None):
+        """初始化免费转录设置对话框，创建UI界面和音频文件选择组件"""
         super().__init__(parent)
-        self.setWindowTitle("JSON输出参数设置") # 保持窗口标题
+        self.setWindowTitle("JSON输出参数设置")
         self.setModal(True)
         self.current_settings = current_settings
         self.selected_audio_file_path = current_settings.get('audio_file_path', "")
+        self.selected_audio_files = []  # 支持多文件选择
 
+        # 设置无边框窗口和半透明背景
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        
-        # 使用与 SettingsDialog 相似的容器和背景色
+
+        # 创建容器和背景
         container = QWidget(self)
-        container.setObjectName("freeTranscriptionDialogContainer") # 可以用新名字或与settingsDialogContainer共享样式
+        container.setObjectName("freeTranscriptionDialogContainer")
         container.setStyleSheet("""
             QWidget#freeTranscriptionDialogContainer {
-                background-color: rgba(60, 60, 80, 220); /* 与 SettingsDialog 一致的背景色 */
+                background-color: rgba(60, 60, 80, 220);
                 border-radius: 10px;
             }
         """)
@@ -44,22 +48,24 @@ class FreeTranscriptionDialog(QDialog):
         dialog_layout.addWidget(container)
 
         main_layout = QVBoxLayout(container)
-        # 与 SettingsDialog 一致的边距和间距
-        main_layout.setContentsMargins(25, 20, 25, 20) 
-        main_layout.setSpacing(18) 
+        main_layout.setContentsMargins(25, 20, 25, 20)
+        main_layout.setSpacing(18)
 
-        # 标题栏与 SettingsDialog 一致
+        # 设置参数标签颜色
+        self.param_label_main_color = QColor(87, 128, 183)
+        self.param_label_stroke_color = QColor(242, 234, 218)
+
+        # 创建标题栏
         title_bar_layout = QHBoxLayout()
-        title_label = CustomLabel("JSON输出参数设置") 
-        # 沿用SettingsDialog的标题颜色方案
-        title_label.setCustomColors(main_color=QColor(87, 128, 183), stroke_color=QColor(242, 234, 218)) 
-        title_font = QFont('楷体', 20, QFont.Weight.Bold) # 与 SettingsDialog 一致的字体
+        title_label = CustomLabel("JSON输出参数设置")
+        title_label.setCustomColors(main_color=self.param_label_main_color, stroke_color=self.param_label_stroke_color)
+        title_font = QFont('楷体', 20, QFont.Weight.Bold)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         close_button = QPushButton("×")
         close_button.setFixedSize(30, 30)
-        close_button.setObjectName("dialogCloseButton") # 与 SettingsDialog 一致的对象名以共享样式
+        close_button.setObjectName("dialogCloseButton")
         close_button.setToolTip("关闭")
         close_button.clicked.connect(self.reject)
 
@@ -69,54 +75,50 @@ class FreeTranscriptionDialog(QDialog):
         title_bar_layout.addWidget(close_button)
         main_layout.addLayout(title_bar_layout)
 
-        # 参数的颜色也与SettingsDialog的参数标签一致
-        self.param_label_main_color = QColor(87, 128, 183)
-        self.param_label_stroke_color = QColor(242, 234, 218)
-
-        # --- 音频文件选择 ---
+        # 创建音频文件选择组件
         audio_file_layout = QHBoxLayout()
         audio_file_label = CustomLabel("音频文件:")
-        audio_file_label.setFont(QFont('楷体', 16, QFont.Weight.Bold)) # 与 SettingsDialog 参数标签字体一致
+        audio_file_label.setFont(QFont('楷体', 16, QFont.Weight.Bold))
         audio_file_label.setCustomColors(self.param_label_main_color, self.param_label_stroke_color)
 
         self.audio_file_path_entry = QLineEdit(self.selected_audio_file_path)
         self.audio_file_path_entry.setPlaceholderText("请选择本地音频文件")
-        self.audio_file_path_entry.setObjectName("pathEditDialogFT") # 新的对象名以应用特定样式
-        self.audio_file_path_entry.setReadOnly(True) 
+        self.audio_file_path_entry.setObjectName("pathEditDialogFT")
+        self.audio_file_path_entry.setReadOnly(True)
 
         browse_audio_button = QPushButton("浏览...")
-        browse_audio_button.setObjectName("dialogBrowseButton") # 新的对象名
+        browse_audio_button.setObjectName("dialogBrowseButton")
         browse_audio_button.clicked.connect(self._browse_audio_file)
 
-        audio_file_layout.addWidget(audio_file_label, 2) # 调整比例
+        audio_file_layout.addWidget(audio_file_label, 2)
         audio_file_layout.addWidget(self.audio_file_path_entry, 5)
         audio_file_layout.addWidget(browse_audio_button, 1)
         main_layout.addLayout(audio_file_layout)
 
-        # --- 语言选择 ---
+        # 创建语言选择组件
         language_layout = QHBoxLayout()
         language_label = CustomLabel("转录语言:")
-        language_label.setFont(QFont('楷体', 16, QFont.Weight.Bold)) #
+        language_label.setFont(QFont('楷体', 16, QFont.Weight.Bold))
         language_label.setCustomColors(self.param_label_main_color, self.param_label_stroke_color)
         self.language_combo = QComboBox()
-        self.language_combo.addItems(["自动检测", "日语", "中文", "英文"])
+        self.language_combo.addItems(["自动检测", "日语", "中文", "英文", "韩语"])
         current_lang_api_code = self.current_settings.get('language', DEFAULT_FREE_TRANSCRIPTION_LANGUAGE)
-        lang_map_to_display = {"auto": "自动检测", "ja": "日语", "zh": "中文", "en": "英文"}
+        lang_map_to_display = {"auto": "自动检测", "ja": "日语", "zh": "中文", "en": "英文", "ko": "韩语"}
         display_lang_to_set = lang_map_to_display.get(current_lang_api_code, "自动检测")
         self.language_combo.setCurrentText(display_lang_to_set)
-        self.language_combo.setObjectName("dialogComboBoxFT") # 新的对象名
+        self.language_combo.setObjectName("dialogComboBoxFT")
 
         language_layout.addWidget(language_label, 2)
-        language_layout.addWidget(self.language_combo, 6) # 占据更多空间
+        language_layout.addWidget(self.language_combo, 6)
         main_layout.addLayout(language_layout)
 
-        # --- 说话人数 ---
+        # 创建说话人数选择组件
         num_speakers_layout = QHBoxLayout()
         num_speakers_label = CustomLabel("说话人数:")
-        num_speakers_label.setFont(QFont('楷体', 16, QFont.Weight.Bold)) #
+        num_speakers_label.setFont(QFont('楷体', 16, QFont.Weight.Bold))
         num_speakers_label.setCustomColors(self.param_label_main_color, self.param_label_stroke_color)
         self.num_speakers_combo = QComboBox()
-        self.num_speakers_combo.addItem("自动检测", 0) 
+        self.num_speakers_combo.addItem("自动检测", 0)
         for i in range(1, 33):
             self.num_speakers_combo.addItem(str(i), i)
         current_num_speakers = self.current_settings.get('num_speakers', DEFAULT_FREE_TRANSCRIPTION_NUM_SPEAKERS)
@@ -125,32 +127,27 @@ class FreeTranscriptionDialog(QDialog):
             self.num_speakers_combo.setCurrentIndex(num_speaker_index)
         else:
             self.num_speakers_combo.setCurrentText("自动检测")
-
-        self.num_speakers_combo.setObjectName("dialogComboBoxFT") # 与语言选择框共享样式
+        self.num_speakers_combo.setObjectName("dialogComboBoxFT")
 
         num_speakers_layout.addWidget(num_speakers_label, 2)
         num_speakers_layout.addWidget(self.num_speakers_combo, 6)
         main_layout.addLayout(num_speakers_layout)
-        
-        # --- 标记音频事件 ---
-        # 创建一个水平布局来容纳复选框，使其看起来不那么突兀
+
+        # 创建音频事件标记复选框
         checkbox_layout = QHBoxLayout()
-        checkbox_layout.addStretch(1) # 左侧空白，使其居中一些
-        self.tag_events_checkbox = QCheckBox("生成非语音声音事件") # 文本稍作调整
+        checkbox_layout.addStretch(1)
+        self.tag_events_checkbox = QCheckBox("生成非语音声音事件")
         self.tag_events_checkbox.setChecked(self.current_settings.get('tag_audio_events', DEFAULT_FREE_TRANSCRIPTION_TAG_AUDIO_EVENTS))
-        self.tag_events_checkbox.setObjectName("dialogCheckboxFT") # 新的对象名
+        self.tag_events_checkbox.setObjectName("dialogCheckboxFT")
         checkbox_layout.addWidget(self.tag_events_checkbox)
-        checkbox_layout.addStretch(1) # 右侧空白
+        checkbox_layout.addStretch(1)
         main_layout.addLayout(checkbox_layout)
 
-        # 移除之前可能导致大片空白的 SpacerItem，或者调整其大小
-        # main_layout.addSpacerItem(QSpacerItem(20, 15, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
-        # 替换为一个固定高度的 Spacer，或者让按钮组自动填充剩余空间
-        main_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)) #
+        main_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed))
 
-        # --- 按钮组 ---
+        # 创建按钮区域
         button_layout = QHBoxLayout()
-        button_layout.setSpacing(15) # 与 SettingsDialog 一致
+        button_layout.setSpacing(15)
         button_layout.addStretch()
         self.confirm_button = QPushButton("确定")
         self.cancel_button = QPushButton("取消")
@@ -165,21 +162,41 @@ class FreeTranscriptionDialog(QDialog):
         main_layout.addLayout(button_layout)
 
         self._apply_styles()
-        self.resize(600, 420) # 调整对话框大小，参考 SettingsDialog (600,480)，略小因内容少
+        self.resize(600, 420)
 
     def _browse_audio_file(self):
+        """浏览并选择音频文件，支持单文件和多文件选择模式"""
         start_dir = os.path.dirname(self.selected_audio_file_path) \
             if self.selected_audio_file_path and os.path.exists(os.path.dirname(self.selected_audio_file_path)) \
             else os.path.expanduser("~")
-        
+
         supported_formats = "音频文件 (*.mp3 *.wav *.flac *.m4a *.ogg *.opus *.aac *.webm *.mp4 *.mov);;所有文件 (*.*)"
-        filepath, _ = QFileDialog.getOpenFileName(self, "选择音频文件", start_dir, supported_formats)
-        if filepath:
-            self.selected_audio_file_path = filepath
-            self.audio_file_path_entry.setText(filepath)
+        filepaths, _ = QFileDialog.getOpenFileNames(self, "选择音频文件", start_dir, supported_formats)
+
+        if filepaths:
+            if len(filepaths) == 1:
+                # 单个文件模式
+                self.selected_audio_file_path = filepaths[0]
+                self.selected_audio_files = []  # 清空批量文件列表
+                self.audio_file_path_entry.setText(filepaths[0])
+                # 启用语言和说话人数选择
+                self.language_combo.setEnabled(True)
+                self.num_speakers_combo.setEnabled(True)
+            else:
+                # 批量文件模式
+                self.selected_audio_files = filepaths
+                self.selected_audio_file_path = ""  # 清空单个文件路径
+                self.audio_file_path_entry.setText(f"已选择 {len(filepaths)} 个音频文件")
+                # 批量音频模式下强制使用自动检测，禁用语言和说话人数选择
+                self.language_combo.setCurrentText("自动检测")
+                self.num_speakers_combo.setCurrentText("自动检测")
+                self.language_combo.setEnabled(False)
+                self.num_speakers_combo.setEnabled(False)
 
     def _accept_settings(self):
-        if not self.selected_audio_file_path or not os.path.exists(self.selected_audio_file_path):
+        """验证并应用用户的设置配置"""
+        # 检查文件选择情况
+        if not self.selected_audio_file_path and not self.selected_audio_files:
             error_dialog = QMessageBox(self)
             error_dialog.setWindowTitle("错误")
             error_dialog.setText("请选择一个有效的音频文件。")
@@ -188,11 +205,47 @@ class FreeTranscriptionDialog(QDialog):
             error_dialog.exec()
             return
 
-        lang_display_to_api = {"自动检测": "auto", "日语": "ja", "中文": "zh", "英文": "en"}
+        # 单个文件模式验证
+        if self.selected_audio_file_path and not os.path.exists(self.selected_audio_file_path):
+            error_dialog = QMessageBox(self)
+            error_dialog.setWindowTitle("错误")
+            error_dialog.setText("请选择一个有效的音频文件。")
+            error_dialog.setIcon(QMessageBox.Icon.Warning)
+            error_dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+            error_dialog.exec()
+            return
+
+        # 批量文件模式验证
+        if self.selected_audio_files:
+            valid_files = []
+            for filepath in self.selected_audio_files:
+                if os.path.exists(filepath):
+                    valid_files.append(filepath)
+                else:
+                    error_dialog = QMessageBox(self)
+                    error_dialog.setWindowTitle("错误")
+                    error_dialog.setText(f"文件不存在: {filepath}")
+                    error_dialog.setIcon(QMessageBox.Icon.Warning)
+                    error_dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+                    error_dialog.exec()
+                    return
+
+            if not valid_files:
+                error_dialog = QMessageBox(self)
+                error_dialog.setWindowTitle("错误")
+                error_dialog.setText("没有选择有效的音频文件。")
+                error_dialog.setIcon(QMessageBox.Icon.Warning)
+                error_dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+                error_dialog.exec()
+                return
+
+        # 获取设置参数
+        lang_display_to_api = {"自动检测": "auto", "日语": "ja", "中文": "zh", "英文": "en", "韩语": "ko"}
         selected_lang_display = self.language_combo.currentText()
-        
+
         new_settings = {
             'audio_file_path': self.selected_audio_file_path,
+            'audio_files': self.selected_audio_files,  # 批量音频文件列表
             'language': lang_display_to_api.get(selected_lang_display, DEFAULT_FREE_TRANSCRIPTION_LANGUAGE),
             'num_speakers': self.num_speakers_combo.currentData(),
             'tag_audio_events': self.tag_events_checkbox.isChecked(),
@@ -201,20 +254,29 @@ class FreeTranscriptionDialog(QDialog):
         self.accept()
 
     def _reset_settings(self):
-        # 音频文件路径不清空，允许用户保留之前的选择
-        # self.selected_audio_file_path = ""
-        # self.audio_file_path_entry.setText("")
-        
-        lang_map_to_display = {"auto": "自动检测", "ja": "日语", "zh": "中文", "en": "英文"}
+        """重置所有设置为默认值"""
+        # 清空音频文件选择
+        self.selected_audio_file_path = ""
+        self.selected_audio_files = []
+        self.audio_file_path_entry.setText("")
+
+        # 启用语言和说话人数选择
+        self.language_combo.setEnabled(True)
+        self.num_speakers_combo.setEnabled(True)
+
+        # 重置语言选择
+        lang_map_to_display = {"auto": "自动检测", "ja": "日语", "zh": "中文", "en": "英文", "ko": "韩语"}
         default_display_lang = lang_map_to_display.get(DEFAULT_FREE_TRANSCRIPTION_LANGUAGE, "自动检测")
         self.language_combo.setCurrentText(default_display_lang)
 
+        # 重置说话人数选择
         default_num_speaker_index = self.num_speakers_combo.findData(DEFAULT_FREE_TRANSCRIPTION_NUM_SPEAKERS)
         if default_num_speaker_index != -1:
              self.num_speakers_combo.setCurrentIndex(default_num_speaker_index)
         else:
              self.num_speakers_combo.setCurrentText("自动检测")
-            
+
+        # 重置音频事件标记
         self.tag_events_checkbox.setChecked(DEFAULT_FREE_TRANSCRIPTION_TAG_AUDIO_EVENTS)
 
     def _apply_styles(self):

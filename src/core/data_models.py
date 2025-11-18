@@ -1,3 +1,14 @@
+"""
+数据模型模块
+
+定义了转录处理和字幕生成过程中使用的核心数据结构。
+包含时间戳词、转录结果、字幕条目等基础数据类。
+提供统一的数据格式用于各模块间的数据交换。
+
+作者: Heal-Jimaku Project
+版本: 1.3.0
+"""
+
 from dataclasses import dataclass, field
 from typing import List, Optional
 import re

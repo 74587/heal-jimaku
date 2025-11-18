@@ -1,11 +1,27 @@
+"""
+SRT字幕处理器模块
+
+负责将ASR（自动语音识别）转录结果转换为标准的SRT字幕格式。
+包含智能文本分割、时间戳精确对齐、字幕条目优化等核心功能。
+支持多语言处理和自定义参数配置。
+
+作者: Heal-Jimaku Project
+版本: 1.3.0
+"""
+
 import re
 import difflib
 from typing import List, Optional, Any, Dict
-from PyQt6.QtCore import QObject, pyqtSignal
 from .data_models import TimestampedWord, ParsedTranscription, SubtitleEntry
 import config as app_config # 使用别名以减少潜在冲突并清晰化来源
 
 class SrtProcessor:
+    """
+    SRT字幕处理器
+
+    负责将ASR转录结果转换为SRT字幕格式，包括文本分割、时间戳对齐、
+    字幕优化等核心功能。
+    """
     def __init__(self, initial_config: Optional[Dict[str, Any]] = None):
         self._signals: Optional[Any] = None
         self._current_progress_offset: int = 0
@@ -31,36 +47,39 @@ class SrtProcessor:
 
     def configure_from_main_config(self, main_config_data: Dict[str, Any]):
         """
-        从主应用配置字典 (使用USER_..._KEY常量作为键) 更新所有参数。
+        Update SRT processor parameters from main application configuration.
+
+        Args:
+            main_config_data: Dictionary containing configuration values using USER_..._KEY constants
         """
-        self.log("正在更新 SrtProcessor 的所有参数 (来自主配置)...")
-        
-        # 更新SRT参数 - 使用 USER_..._KEY 从主配置对象获取
+        # Update SRT parameters using USER_..._KEY from main configuration
         self.min_duration_target = float(main_config_data.get(app_config.USER_MIN_DURATION_TARGET_KEY, app_config.DEFAULT_MIN_DURATION_TARGET))
         self.max_duration = float(main_config_data.get(app_config.USER_MAX_DURATION_KEY, app_config.DEFAULT_MAX_DURATION))
         self.max_chars_per_line = int(main_config_data.get(app_config.USER_MAX_CHARS_PER_LINE_KEY, app_config.DEFAULT_MAX_CHARS_PER_LINE))
         self.default_gap_ms = int(main_config_data.get(app_config.USER_DEFAULT_GAP_MS_KEY, app_config.DEFAULT_DEFAULT_GAP_MS))
-        self.log(f"  SRT参数已更新为: min_dur={self.min_duration_target}, max_dur={self.max_duration}, max_chars={self.max_chars_per_line}, gap_ms={self.default_gap_ms}")
 
-        # 更新LLM参数 - 使用 USER_..._KEY 从主配置对象获取
-        self.llm_api_key = main_config_data.get(app_config.USER_LLM_API_KEY_KEY, app_config.DEFAULT_LLM_API_KEY)
-        self.llm_base_url = main_config_data.get(app_config.USER_LLM_API_BASE_URL_KEY, app_config.DEFAULT_LLM_API_BASE_URL)
-        self.llm_model_name = main_config_data.get(app_config.USER_LLM_MODEL_NAME_KEY, app_config.DEFAULT_LLM_MODEL_NAME)
-        self.llm_temperature = float(main_config_data.get(app_config.USER_LLM_TEMPERATURE_KEY, app_config.DEFAULT_LLM_TEMPERATURE))
-        self.log(f"  LLM参数已更新: BaseURLSet={bool(self.llm_base_url)}, ModelSet={bool(self.llm_model_name)}, TempSet={self.llm_temperature is not None}, APIKeySet={bool(self.llm_api_key)}")
+        # Update LLM parameters using new multi-profile system
+        current_llm_profile = app_config.get_current_llm_profile(main_config_data)
+        self.llm_api_key = current_llm_profile.get("api_key", app_config.DEFAULT_LLM_API_KEY)
+        self.llm_base_url = current_llm_profile.get("api_base_url", app_config.DEFAULT_LLM_API_BASE_URL)
+        self.llm_model_name = current_llm_profile.get("model_name", app_config.DEFAULT_LLM_MODEL_NAME)
+        self.llm_temperature = float(current_llm_profile.get("temperature", app_config.DEFAULT_LLM_TEMPERATURE))
 
     # --- 新增/恢复 update_srt_params 方法 ---
     def update_srt_params(self, srt_params_dict: Dict[str, Any]):
         """
-        从一个键为简单字符串的字典更新SRT处理参数。
-        这个方法被 MainWindow 的 start_conversion 调用，参数来自 self.advanced_srt_settings。
+        Update SRT processing parameters from a simple dictionary.
+
+        This method is called by MainWindow.start_conversion() with parameters
+        from self.advanced_srt_settings.
+
+        Args:
+            srt_params_dict: Dictionary containing SRT processing parameters
         """
-        self.log("正在通过 update_srt_params 更新SRT处理参数...")
         self.min_duration_target = float(srt_params_dict.get('min_duration_target', self.min_duration_target))
         self.max_duration = float(srt_params_dict.get('max_duration', self.max_duration))
         self.max_chars_per_line = int(srt_params_dict.get('max_chars_per_line', self.max_chars_per_line))
         self.default_gap_ms = int(srt_params_dict.get('default_gap_ms', self.default_gap_ms))
-        self.log(f"  SRT参数通过 update_srt_params 更新为: min_dur={self.min_duration_target}, max_dur={self.max_duration}, max_chars={self.max_chars_per_line}, gap_ms={self.default_gap_ms}")
 
 
     def update_llm_config(
@@ -109,6 +128,41 @@ class SrtProcessor:
             capped_progress = min(capped_progress, 99) 
             self._signals.progress.emit(capped_progress)
 
+    def _is_bracketed_content(self, text: str) -> bool:
+        """检查文本是否为括号内容（任何括号内的内容都应该独立处理）"""
+        if not text or not text.strip():
+            return False
+
+        text = text.strip()
+
+        # 检查是否完全被括号包围
+        # 支持各种括号类型：()、（）、【】、[]、{}、<>
+        bracket_patterns = [
+            r"^\(.*\)$",      # ()
+            r"^（.*）$",        # （）
+            r"^【.*】$",        # 【】
+            r"^\[.*\]$",        # []
+            r"^\{.*\}$",        # {}
+            r"^<.*>$",          # <>
+        ]
+
+        return any(re.match(pattern, text) for pattern in bracket_patterns)
+
+    def _is_audio_event_words(self, words_list) -> bool:
+        """检查词列表是否为括号内容（代表非语言声音或特殊标记）"""
+        if not words_list:
+            return False
+
+        # 组合所有词的文本
+        full_text = "".join([w.text for w in words_list]).strip()
+
+        # 检查是否为括号内容
+        if self._is_bracketed_content(full_text):
+            return True
+
+        # 如果ASR标记为audio_event类型，也认为是音频事件
+        return any(getattr(w, 'type', 'word') == 'audio_event' for w in words_list)
+
     def format_timecode(self, seconds_float: float) -> str:
         if not isinstance(seconds_float, (int, float)) or seconds_float < 0:
             return "00:00:00,000"
@@ -132,57 +186,84 @@ class SrtProcessor:
         return False
 
     def get_segment_words_fuzzy(self, text_segment: str, all_parsed_words: List[TimestampedWord], start_search_index: int) -> tuple[List[TimestampedWord], int, float]:
+        """
+        Fuzzy matching algorithm for aligning LLM segments with ASR word timestamps.
+
+        Args:
+            text_segment: LLM-generated text segment to align
+            all_parsed_words: List of ASR words with timestamps
+            start_search_index: Starting index in the word list for search
+
+        Returns:
+            Tuple of (matched_words, next_search_index, match_ratio)
+        """
         segment_clean = text_segment.strip().replace(" ", "")
         if not segment_clean:
             return [], start_search_index, 0.0
+
         best_match_words_ts_objects: List[TimestampedWord] = []
         best_match_ratio = 0.0
         best_match_end_index = start_search_index
-        base_len_factor = 3 
+
+        # 使用适当的搜索窗口大小
+        base_len_factor = 3
         min_additional_words = 20
         max_additional_words = 60
         estimated_words_in_segment = len(text_segment.split())
         search_window_size = len(segment_clean) * base_len_factor + min(max(estimated_words_in_segment * 2, min_additional_words), max_additional_words)
         max_lookahead_outer = min(start_search_index + search_window_size, len(all_parsed_words))
+
         for i in range(start_search_index, max_lookahead_outer):
-            if not self._is_worker_running(): break
+            if not self._is_worker_running():
+                break
+
             current_words_text_list = []
             current_word_ts_object_list: List[TimestampedWord] = []
-            max_j_lookahead = min(i + len(segment_clean) + 30, len(all_parsed_words)) 
+            max_j_lookahead = min(i + len(segment_clean) + 30, len(all_parsed_words))
+
             for j in range(i, max_j_lookahead):
                 word_obj = all_parsed_words[j]
                 current_word_ts_object_list.append(word_obj)
-                current_words_text_list.append(word_obj.text.replace(" ", "")) 
+                current_words_text_list.append(word_obj.text.replace(" ", ""))
                 built_text = "".join(current_words_text_list)
+
                 if not built_text.strip():
                     continue
+
                 matcher = difflib.SequenceMatcher(None, segment_clean, built_text, autojunk=False)
                 ratio = matcher.ratio()
+
                 update_best = False
                 if ratio > best_match_ratio:
                     update_best = True
-                elif abs(ratio - best_match_ratio) < 1e-9: 
-                    if best_match_words_ts_objects: 
+                elif abs(ratio - best_match_ratio) < 1e-9:
+                    if best_match_words_ts_objects:
                         current_len_diff = abs(len(built_text) - len(segment_clean))
                         best_len_diff = abs(len("".join(w.text.replace(" ","") for w in best_match_words_ts_objects)) - len(segment_clean))
                         if current_len_diff < best_len_diff:
                             update_best = True
-                    else: 
+                    else:
                         update_best = True
-                if update_best and ratio > 0.01 : 
+
+                if update_best and ratio > 0.01:
                     best_match_ratio = ratio
-                    best_match_words_ts_objects = list(current_word_ts_object_list) 
+                    best_match_words_ts_objects = list(current_word_ts_object_list)
                     best_match_end_index = j + 1
-                if ratio > 0.95 and len(built_text) > len(segment_clean) * 1.8: 
-                    break 
-            if best_match_ratio > 0.98 : 
+
+                if ratio > 0.95 and len(built_text) > len(segment_clean) * 1.8:
+                    break
+
+            if best_match_ratio > 0.98:
                 break
+
         if not best_match_words_ts_objects:
             self.log(f"严重警告: LLM片段 \"{text_segment}\" (清理后: \"{segment_clean}\") 无法在ASR词语中找到任何匹配。将跳过此片段。搜索起始索引: {start_search_index}")
             return [], start_search_index, 0.0
+
         if best_match_ratio < app_config.ALIGNMENT_SIMILARITY_THRESHOLD:
             matched_text_preview = "".join([w.text for w in best_match_words_ts_objects])
             self.log(f"警告: LLM片段 \"{text_segment}\" (清理后: \"{segment_clean}\") 与ASR词语的对齐相似度较低 ({best_match_ratio:.2f})。ASR匹配文本: \"{matched_text_preview}\"")
+
         return best_match_words_ts_objects, best_match_end_index, best_match_ratio
 
     # --- 结束时间修正 辅助函数 ---
@@ -195,7 +276,7 @@ class SrtProcessor:
 
         duration_threshold = 0.5  # 异常时长阈值 (0.5s)
         gap_threshold = 0.6       # 异常空隙阈值 (0.6s)
-        correction_padding = 0.6  # 修正时使用的“留白” (0.6s)
+        correction_padding = 0.3  # 修正时使用的"留白" (0.3s)
         
         # 检查1 (空隙优先): 检查倒数第二个词和最后一个词之间的“空隙”
         if len(segment_words) > 1:
@@ -205,11 +286,9 @@ class SrtProcessor:
             gap_duration = last_word.start_time - word_before_last.end_time
             
             if gap_duration > gap_threshold:
-                self.log(f"检测到词间不合理空隙 ({(gap_duration):.2f}s) 于 '{word_before_last.text}' 和 '{last_word.text}' 之间。")
-                self.log(f"    -> 原始结束时间: {raw_end_time:.3f}")
-                # 以“倒二词”的 *开始* 时间为基准
+                self.log(f"字幕时间优化: 修正词间异常空隙 ({gap_duration:.2f}s)")
+                # 以"倒二词"的 *开始* 时间为基准
                 new_end_time = word_before_last.start_time + correction_padding
-                self.log(f"    -> 修正后结束时间: {new_end_time:.3f} (基于 倒二词.start + {correction_padding}s)")
                 
                 # 安全检查
                 if new_end_time < segment_start_time:
@@ -222,10 +301,8 @@ class SrtProcessor:
             word_before_last_duration = word_before_last.end_time - word_before_last.start_time
             
             if word_before_last_duration > duration_threshold:
-                self.log(f"检测到倒二词时长不合理 ({(word_before_last_duration):.2f}s) 于 '{word_before_last.text}'。")
-                self.log(f"    -> 原始结束时间: {raw_end_time:.3f}")
+                self.log(f"字幕时间优化: 修正异常词时长 ({word_before_last_duration:.2f}s)")
                 new_end_time = word_before_last.start_time + correction_padding
-                self.log(f"    -> 修正后结束时间: {new_end_time:.3f} (基于 倒二词.start + {correction_padding}s)")
                 
                 # 安全检查
                 if new_end_time < segment_start_time:
@@ -237,10 +314,8 @@ class SrtProcessor:
         last_word_duration = last_word.end_time - last_word.start_time
         
         if last_word_duration > duration_threshold:
-            self.log(f"检测到末尾词时长不合理 ({(last_word_duration):.2f}s) 于 '{last_word.text}'。")
-            self.log(f"    -> 原始结束时间: {raw_end_time:.3f}")
+            self.log(f"字幕时间优化: 修正末尾词异常时长 ({last_word_duration:.2f}s)")
             new_end_time = last_word.start_time + correction_padding
-            self.log(f"    -> 修正后结束时间: {new_end_time:.3f} (基于 末尾词.start + {correction_padding}s)")
 
             # 安全检查
             if new_end_time < segment_start_time:
@@ -254,6 +329,16 @@ class SrtProcessor:
     def split_long_sentence(self, sentence_text: str, sentence_words: List[TimestampedWord],
                             original_start_time: float, original_end_time: float
                            ) -> List[SubtitleEntry]:
+        # 检查是否为括号内容，如果是则不分割
+        if self._is_bracketed_content(sentence_text.strip()):
+            self.log(f"   检测到括号内容，跳过长句分割: \"{sentence_text}\"")
+            entry = SubtitleEntry(0, original_start_time, original_end_time, sentence_text, sentence_words)
+            if entry.duration < app_config.MIN_DURATION_ABSOLUTE:
+                entry.end_time = entry.start_time + app_config.MIN_DURATION_ABSOLUTE
+            if entry.duration > self.max_duration or len(sentence_text) > self.max_chars_per_line:
+                entry.is_intentionally_oversized = True
+            return [entry]
+
         if not sentence_words:
             if sentence_text.strip():
                 self.log(f"警告: split_long_sentence 收到空词列表但有文本: \"{sentence_text}\"。将尝试创建单个条目。")
@@ -392,6 +477,8 @@ class SrtProcessor:
         all_parsed_words = parsed_transcription.words
         if not llm_segments_text: self.log("错误：LLM 未返回任何分割片段。"); return None
         if not all_parsed_words: self.log("错误：解析后的词列表为空，无法进行对齐。"); return None
+
+        
         total_llm_segments = len(llm_segments_text)
         WEIGHT_ALIGN = 40; WEIGHT_MERGE = 30; WEIGHT_FORMAT = 30
         completed_steps_phase1 = 0
@@ -405,6 +492,8 @@ class SrtProcessor:
                 completed_steps_phase1 += 1
                 self._emit_srt_progress(int( (completed_steps_phase1 / total_llm_segments) * WEIGHT_ALIGN ), 100)
                 continue
+
+            
             word_search_start_index = next_search_idx
             first_actual_word_index = -1
             for idx_fw, word_obj_fw in enumerate(matched_words):
@@ -427,18 +516,22 @@ class SrtProcessor:
                 entry_start_time = matched_words[0].start_time; entry_end_time = matched_words[-1].end_time
                 actual_words_for_entry = matched_words
             
-            # 应用结束时间修正 (主流程)
-            entry_end_time = self._apply_end_time_correction(actual_words_for_entry, entry_end_time, entry_start_time)
-
             entry_duration = max(0.001, entry_end_time - entry_start_time)
             text_len = len(entry_text_from_llm)
-            is_audio_event = False
-            if actual_words_for_entry:
-                is_audio_event = all(not w.text.strip() or getattr(w, 'type', 'word') == 'audio_event' or re.match(r"^\(.*\)$|^（.*）$", w.text.strip()) for w in actual_words_for_entry)
+            is_audio_event = self._is_audio_event_words(actual_words_for_entry) if actual_words_for_entry else False
+
+            # 应用结束时间修正 (主流程)
+            final_audio_event_end_time = entry_end_time
             if is_audio_event:
+                # 音频事件：保持原始结束时间，不应用时间修正
+                self.log(f"   检测到音频事件，保持原始时长: \"{entry_text_from_llm}\"")
+            else:
+                # 非音频事件：应用正常的时间修正
+                entry_end_time = self._apply_end_time_correction(actual_words_for_entry, entry_end_time, entry_start_time)
                 final_audio_event_end_time = entry_end_time
-                if entry_duration < app_config.MIN_DURATION_ABSOLUTE: final_audio_event_end_time = entry_start_time + app_config.MIN_DURATION_ABSOLUTE
-                final_audio_event_end_time = max(final_audio_event_end_time, entry_start_time + 0.001)
+
+            if is_audio_event:
+                # 音频事件：使用修正后的时间（可能包含向前延长），但不向后延长
                 audio_event_text_content = "".join([w.text for w in actual_words_for_entry])
                 intermediate_entries.append(SubtitleEntry(0, entry_start_time, final_audio_event_end_time, audio_event_text_content, actual_words_for_entry, match_ratio))
             elif entry_duration > self.max_duration or text_len > self.max_chars_per_line:
@@ -448,13 +541,23 @@ class SrtProcessor:
                 for sub_entry in split_sub_entries: sub_entry.alignment_ratio = match_ratio
                 intermediate_entries.extend(split_sub_entries)
             elif entry_duration < self.min_duration_target :
-                final_short_entry_end_time = entry_start_time + self.min_duration_target
-                if entry_duration < app_config.MIN_DURATION_ABSOLUTE: final_short_entry_end_time = entry_start_time + app_config.MIN_DURATION_ABSOLUTE
-                original_end_of_last_actual_word = actual_words_for_entry[-1].end_time if actual_words_for_entry else entry_start_time
-                max_allowed_extension = original_end_of_last_actual_word + 0.5 
-                final_short_entry_end_time = min(final_short_entry_end_time, max_allowed_extension)
-                final_short_entry_end_time = max(final_short_entry_end_time, entry_end_time) # entry_end_time 可能是被修正过的
-                final_short_entry_end_time = max(final_short_entry_end_time, entry_start_time + 0.001)
+                # 检查是否为括号内容，如果是则不进行时长扩展
+                is_bracketed = self._is_bracketed_content(entry_text_from_llm)
+
+                if is_bracketed:
+                    # 括号内容保持原始时长，不强制扩展
+                    self.log(f"   检测到括号内容，保持原始时长: \"{entry_text_from_llm}\" ({entry_duration:.2f}s)")
+                    final_short_entry_end_time = final_audio_event_end_time if is_audio_event else entry_end_time
+                else:
+                    # 非括号内容的正常时长扩展逻辑
+                    final_short_entry_end_time = entry_start_time + self.min_duration_target
+                    if entry_duration < app_config.MIN_DURATION_ABSOLUTE: final_short_entry_end_time = entry_start_time + app_config.MIN_DURATION_ABSOLUTE
+                    original_end_of_last_actual_word = actual_words_for_entry[-1].end_time if actual_words_for_entry else entry_start_time
+                    max_allowed_extension = original_end_of_last_actual_word + 0.5
+                    final_short_entry_end_time = min(final_short_entry_end_time, max_allowed_extension)
+                    final_short_entry_end_time = max(final_short_entry_end_time, entry_end_time) # entry_end_time 可能是被修正过的
+                    final_short_entry_end_time = max(final_short_entry_end_time, entry_start_time + 0.001)
+
                 intermediate_entries.append(SubtitleEntry(0, entry_start_time, final_short_entry_end_time, entry_text_from_llm, actual_words_for_entry, match_ratio))
             else:
                 # 此处 entry_end_time 已经是被修正过的了
@@ -481,10 +584,16 @@ class SrtProcessor:
                 gap_between = next_entry.start_time - current_entry_to_merge.end_time
                 combined_text_len = len(current_entry_to_merge.text) + len(next_entry.text) + 1 
                 combined_duration = next_entry.end_time - current_entry_to_merge.start_time
-                next_is_audio_event = False
-                if next_entry.words_used: next_is_audio_event = all(not w.text.strip() or getattr(w, 'type', 'word') == 'audio_event' or re.match(r"^\(.*\)$|^（.*）$", w.text.strip()) for w in next_entry.words_used)
+                next_is_audio_event = self._is_audio_event_words(next_entry.words_used) if next_entry.words_used else False
+                current_is_audio_event = self._is_bracketed_content(current_entry_to_merge.text)
+
+                # 如果任一条目是非语言声音，不合并
+                if current_is_audio_event or next_is_audio_event:
+                    merged_entries.append(current_entry_to_merge)
+                    idx_merge += 1
+                    continue
+
                 if current_entry_to_merge.duration < self.min_duration_target and \
-                   not next_is_audio_event and \
                    combined_text_len <= self.max_chars_per_line and \
                    combined_duration <= self.max_duration and \
                    gap_between < 0.5 and \
@@ -509,32 +618,50 @@ class SrtProcessor:
         for entry_idx, current_entry in enumerate(merged_entries):
             if not self._is_worker_running(): self.log("任务被用户中断(最终格式化阶段)。"); return None
             self.log(f"   格式化条目 {entry_idx+1}/{total_merged_final_entries}: \"{current_entry.text[:30]}...\"")
-            if last_processed_entry_object is not None: 
-                
-                # 应用开始时间修正 (提前0.25s)
-                # 必须在应用 default_gap_ms 之前检查原始间隙
+            if last_processed_entry_object is not None:
+
+                # 检测并修正时间重叠
                 raw_gap = current_entry.start_time - last_processed_entry_object.end_time
-                if raw_gap > 0.5:
-                    self.log(f"检测到字幕间 > 0.5s 的空隙 ({raw_gap:.2f}s)。")
+                if raw_gap < -0.01:  # 检测到负时间（重叠）
+                    self.log(f"字幕时间重叠修正: 调整重叠时间 {raw_gap:.3f}s")
+                    # 将当前条目的开始时间调整为上一条目结束时间 + 最小间隔
+                    new_start_time = last_processed_entry_object.end_time + 0.01  # 最小间隔10ms
+                    if new_start_time < current_entry.end_time:
+                        current_entry.start_time = new_start_time
+
+                # 应用开始时间修正 (提前0.25s)
+                # 对于音频事件，不应用修正
+                current_is_audio_event = self._is_bracketed_content(current_entry.text)
+                if current_is_audio_event:
+                    self.log(f"   检测到音频事件，跳过开始时间修正")
+                elif raw_gap > 0.5:
+                    self.log(f"字幕时间优化: 检测到较大时间间隙 ({raw_gap:.2f}s)")
                     new_start_time = current_entry.start_time - 0.25
                     # 安全检查: 确保提前后不会与上一句重叠
                     if new_start_time > last_processed_entry_object.end_time:
-                        self.log(f"    -> 将开始时间 {current_entry.start_time:.3f} 提前至 {new_start_time:.3f}")
+                        self.log(f"字幕时间优化: 提前开始时间以减少间隙")
                         current_entry.start_time = new_start_time
                     else:
-                        self.log(f"    -> 想要提前开始时间，但会与上一句重叠({new_start_time:.3f} vs {last_processed_entry_object.end_time:.3f})，跳过。")
+                        self.log(f"时间优化跳过: 会与上一句重叠")
                 
                 # (继续执行原有的 100ms 间隙逻辑)
+                # 检查当前条目是否为音频事件，如果是则豁免最小间距要求
+                current_is_audio_event = self._is_bracketed_content(current_entry.text)
+                last_is_audio_event = self._is_bracketed_content(last_processed_entry_object.text)
+
                 gap_seconds = self.default_gap_ms / 1000.0
-                if current_entry.start_time < last_processed_entry_object.end_time + gap_seconds:
-                    new_previous_end_time = current_entry.start_time - gap_seconds
-                    min_duration_for_previous = app_config.MIN_DURATION_ABSOLUTE 
-                    if new_previous_end_time > last_processed_entry_object.start_time + min_duration_for_previous:
-                        last_processed_entry_object.end_time = new_previous_end_time
-                    else: 
-                        safe_previous_end_time = current_entry.start_time - 0.001 
-                        if safe_previous_end_time > last_processed_entry_object.start_time + min_duration_for_previous:
-                             last_processed_entry_object.end_time = safe_previous_end_time
+
+                # 如果任一条目是音频事件，豁免最小间距检查
+                if current_is_audio_event or last_is_audio_event:
+                    self.log(f"   检测到音频事件内容，豁免最小间距检查")
+                elif current_entry.start_time < last_processed_entry_object.end_time + gap_seconds:
+                    # 修正策略：调整当前条目的开始时间，而不是修改前一个条目的结束时间
+                    new_current_start_time = last_processed_entry_object.end_time + gap_seconds
+                    # 确保当前条目有足够的最小时长
+                    min_current_duration = app_config.MIN_DURATION_ABSOLUTE
+                    if new_current_start_time + min_current_duration <= current_entry.end_time:
+                        self.log(f"字幕时间优化: 调整以保持最小间距")
+                        current_entry.start_time = new_current_start_time
                     if final_srt_formatted_list: 
                         final_srt_formatted_list[-1] = last_processed_entry_object.to_srt_format(self)
             current_duration = current_entry.duration 
@@ -551,6 +678,7 @@ class SrtProcessor:
                 current_entry.end_time = current_entry.start_time + self.max_duration
             if current_entry.end_time <= current_entry.start_time: 
                  current_entry.end_time = current_entry.start_time + 0.001
+            
             current_entry.index = subtitle_index
             final_srt_formatted_list.append(current_entry.to_srt_format(self))
             last_processed_entry_object = current_entry; subtitle_index += 1
