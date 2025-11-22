@@ -39,7 +39,24 @@ from config import (
     DEFAULT_CUSTOM_BACKGROUND_FOLDER, DEFAULT_ENABLE_RANDOM_BACKGROUND,
     DEFAULT_FIXED_BACKGROUND_PATH, DEFAULT_BACKGROUND_SOURCE,
     DEFAULT_REMEMBERED_CUSTOM_FOLDER, DEFAULT_REMEMBERED_CUSTOM_IMAGE,
-    BACKGROUND_SOURCE_USER_SELECTED, BACKGROUND_SOURCE_CAROUSEL_FIXED
+    BACKGROUND_SOURCE_USER_SELECTED, BACKGROUND_SOURCE_CAROUSEL_FIXED,
+    # 云端转录配置
+    USER_CLOUD_TRANSCRIPTION_PROVIDER_KEY,
+    USER_ELEVENLABS_API_KEY_KEY, USER_ELEVENLABS_API_REMEMBER_KEY_KEY,
+    USER_ELEVENLABS_API_LANGUAGE_KEY, USER_ELEVENLABS_API_NUM_SPEAKERS_KEY,
+    USER_ELEVENLABS_API_ENABLE_DIARIZATION_KEY, USER_ELEVENLABS_API_TAG_AUDIO_EVENTS_KEY,
+    USER_SONIOX_API_KEY_KEY, USER_SONIOX_API_REMEMBER_KEY_KEY,
+    USER_SONIOX_LANGUAGE_HINTS_KEY, USER_SONIOX_ENABLE_SPEAKER_DIARIZATION_KEY,
+    USER_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION_KEY, USER_SONIOX_CONTEXT_TERMS_KEY,
+    USER_SONIOX_CONTEXT_TEXT_KEY, USER_SONIOX_CONTEXT_GENERAL_KEY,
+    DEFAULT_CLOUD_TRANSCRIPTION_PROVIDER,
+    DEFAULT_ELEVENLABS_API_KEY, DEFAULT_ELEVENLABS_API_REMEMBER_KEY,
+    DEFAULT_ELEVENLABS_API_LANGUAGE, DEFAULT_ELEVENLABS_API_NUM_SPEAKERS,
+    DEFAULT_ELEVENLABS_API_ENABLE_DIARIZATION, DEFAULT_ELEVENLABS_API_TAG_AUDIO_EVENTS,
+    DEFAULT_SONIOX_API_KEY, DEFAULT_SONIOX_API_REMEMBER_KEY,
+    DEFAULT_SONIOX_LANGUAGE_HINTS, DEFAULT_SONIOX_ENABLE_SPEAKER_DIARIZATION,
+    DEFAULT_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION, DEFAULT_SONIOX_CONTEXT_TERMS,
+    DEFAULT_SONIOX_CONTEXT_TEXT, DEFAULT_SONIOX_CONTEXT_GENERAL
 )
 
 from utils.file_utils import resource_path
@@ -48,6 +65,7 @@ from .conversion_worker import ConversionWorker
 from .controllers.conversion_controller import ConversionController
 from core.srt_processor import SrtProcessor
 from .settings_dialog import SettingsDialog
+from .cloud_transcription_dialog import CloudTranscriptionDialog
 from .free_transcription_dialog import FreeTranscriptionDialog
 from core.elevenlabs_api import ElevenLabsSTTClient
 from .llm_advanced_settings_dialog import LlmAdvancedSettingsDialog, LlmTestWorker
@@ -123,6 +141,7 @@ class HealJimakuApp(QMainWindow):
         self.log_area_early_messages: list[str] = []
         self.advanced_srt_settings: Dict[str, Any] = {}
         self.free_transcription_settings: Dict[str, Any] = {}
+        self.cloud_transcription_settings: Dict[str, Any] = {}
         self.llm_advanced_settings: Dict[str, Any] = {}
         self._current_input_mode = "local_json"
         self._temp_audio_file_for_free_transcription: Optional[str] = None
@@ -678,15 +697,21 @@ class HealJimakuApp(QMainWindow):
         if not self.json_path_entry or not self.json_browse_button or not self.json_format_combo:
             return
 
-        if self._current_input_mode == "free_transcription":
+        if self._current_input_mode in ["free_transcription", "cloud_transcription"]:
             self.json_path_entry.setEnabled(False)
             self.json_browse_button.setEnabled(False)
             self.json_format_combo.setEnabled(False)
-            self.json_path_entry.setPlaceholderText("通过'免费获取JSON'模式提供音频文件")
-            
-            # 新增：更新按钮文本为取消模式
+
+            if self._current_input_mode == "free_transcription":
+                self.json_path_entry.setPlaceholderText("通过'免费转录'模式提供音频文件")
+                button_text = "取消免费转录"
+            else:  # cloud_transcription
+                self.json_path_entry.setPlaceholderText("通过'云端转录'模式提供音频文件")
+                button_text = "取消云端转录"
+
+            # 更新按钮文本为取消模式
             if self.free_transcription_button:
-                self.free_transcription_button.setText("取消转录音频模式")
+                self.free_transcription_button.setText(button_text)
                 self.free_transcription_button.setProperty("cancelMode", True)
                 self.free_transcription_button.style().unpolish(self.free_transcription_button)
                 self.free_transcription_button.style().polish(self.free_transcription_button)
@@ -703,7 +728,7 @@ class HealJimakuApp(QMainWindow):
             
             # 新增：恢复按钮文本为正常模式
             if self.free_transcription_button:
-                self.free_transcription_button.setText("免费获取JSON")
+                self.free_transcription_button.setText("云端转录")
                 self.free_transcription_button.setProperty("cancelMode", False)
                 self.free_transcription_button.style().unpolish(self.free_transcription_button)
                 self.free_transcription_button.style().polish(self.free_transcription_button)
@@ -983,11 +1008,11 @@ class HealJimakuApp(QMainWindow):
         self.json_browse_button = QPushButton("浏览...")
         self.json_browse_button.setObjectName("browseButton")
         self.json_browse_button.clicked.connect(self.browse_json_file)
-        # 统一按钮长度，与"免费获取JSON"按钮保持一致
+        # 统一按钮长度，与"云端转录"按钮保持一致
         self.json_browse_button.setFixedWidth(100)  # 设置固定宽度
         json_input_line_layout.addWidget(self.json_browse_button, 0)  # 按钮不拉伸
 
-        self.free_transcription_button = QPushButton("免费获取JSON")
+        self.free_transcription_button = QPushButton("云端转录")
         self.free_transcription_button.setObjectName("freeButton")
         self.free_transcription_button.clicked.connect(self.handle_free_transcription_button_click)
         json_input_line_layout.addWidget(self.free_transcription_button, 0)  # 按钮不拉伸
@@ -999,7 +1024,7 @@ class HealJimakuApp(QMainWindow):
         format_label = CustomLabel("JSON 格式:")
         format_label.setFont(QFont(self.custom_font_family, 13, QFont.Weight.Bold))
         self.json_format_combo = QComboBox()
-        self.json_format_combo.addItems(["ElevenLabs(推荐)", "Whisper(推荐)", "Deepgram", "AssemblyAI"])
+        self.json_format_combo.addItems(["ElevenLabs(推荐)", "Whisper(推荐)", "Deepgram", "AssemblyAI", "Soniox"])
         self.json_format_combo.setObjectName("formatCombo")
 
         # 设置字体大小并调整下拉框尺寸
@@ -1041,7 +1066,7 @@ class HealJimakuApp(QMainWindow):
         self.output_browse_button = QPushButton("浏览...")
         self.output_browse_button.setObjectName("browseButton")
         self.output_browse_button.clicked.connect(self.select_output_dir)
-        # 统一按钮长度，与"免费获取JSON"按钮保持一致
+        # 统一按钮长度，与"云端转录"按钮保持一致
         self.output_browse_button.setFixedWidth(100)  # 设置固定宽度
         output_layout.addWidget(output_label, 0)  # 标签不拉伸
         output_layout.addWidget(self.output_path_entry, 1)  # 输入框占主要空间
@@ -1346,9 +1371,23 @@ class HealJimakuApp(QMainWindow):
             "ElevenLabs(推荐)": "elevenlabs",
             "Whisper(推荐)": "whisper",
             "Deepgram": "deepgram",
-            "AssemblyAI": "assemblyai"
+            "AssemblyAI": "assemblyai",
+            "Soniox": "soniox"
         }
         return source_format_map.get(selected_text, "elevenlabs")
+
+    def _get_source_format_from_cloud_settings(self):
+        """从云端转录设置获取源格式"""
+        if not hasattr(self, 'cloud_transcription_settings') or not self.cloud_transcription_settings:
+            return "elevenlabs"
+
+        provider = self.cloud_transcription_settings.get('provider', 'elevenlabs_web')
+        format_map = {
+            'elevenlabs_web': 'elevenlabs',
+            'elevenlabs_api': 'elevenlabs_api',
+            'soniox_api': 'soniox'
+        }
+        return format_map.get(provider, 'elevenlabs')
 
     def log_message(self, message: str):
         """简单的日志记录"""
@@ -1522,6 +1561,24 @@ class HealJimakuApp(QMainWindow):
                 'num_speakers': self.config.get(USER_FREE_TRANSCRIPTION_NUM_SPEAKERS_KEY, DEFAULT_FREE_TRANSCRIPTION_NUM_SPEAKERS),
                 'tag_audio_events': self.config.get(USER_FREE_TRANSCRIPTION_TAG_AUDIO_EVENTS_KEY, DEFAULT_FREE_TRANSCRIPTION_TAG_AUDIO_EVENTS),
             }
+            # 初始化云端转录设置
+            self.cloud_transcription_settings = {
+                'provider': self.config.get('user_cloud_transcription_provider', DEFAULT_CLOUD_TRANSCRIPTION_PROVIDER),
+                'elevenlabs_api_key': self.config.get('user_elevenlabs_api_key', DEFAULT_ELEVENLABS_API_KEY),
+                'elevenlabs_api_remember_key': self.config.get('user_elevenlabs_api_remember_key', DEFAULT_ELEVENLABS_API_REMEMBER_KEY),
+                'elevenlabs_api_language': self.config.get('user_elevenlabs_api_language', DEFAULT_ELEVENLABS_API_LANGUAGE),
+                'elevenlabs_api_num_speakers': self.config.get('user_elevenlabs_api_num_speakers', DEFAULT_ELEVENLABS_API_NUM_SPEAKERS),
+                'elevenlabs_api_enable_diarization': self.config.get('user_elevenlabs_api_enable_diarization', DEFAULT_ELEVENLABS_API_ENABLE_DIARIZATION),
+                'elevenlabs_api_tag_audio_events': self.config.get('user_elevenlabs_api_tag_audio_events', DEFAULT_ELEVENLABS_API_TAG_AUDIO_EVENTS),
+                'soniox_api_key': self.config.get('user_soniox_api_key', DEFAULT_SONIOX_API_KEY),
+                'soniox_api_remember_key': self.config.get('user_soniox_api_remember_key', DEFAULT_SONIOX_API_REMEMBER_KEY),
+                'soniox_language_hints': self.config.get('user_soniox_language_hints', DEFAULT_SONIOX_LANGUAGE_HINTS),
+                'soniox_enable_speaker_diarization': self.config.get('user_soniox_enable_speaker_diarization', DEFAULT_SONIOX_ENABLE_SPEAKER_DIARIZATION),
+                'soniox_enable_language_identification': self.config.get('user_soniox_enable_language_identification', DEFAULT_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION),
+                'soniox_context_terms': self.config.get('user_soniox_context_terms', DEFAULT_SONIOX_CONTEXT_TERMS),
+                'soniox_context_text': self.config.get('user_soniox_context_text', DEFAULT_SONIOX_CONTEXT_TEXT),
+                'soniox_context_general': self.config.get('user_soniox_context_general', DEFAULT_SONIOX_CONTEXT_GENERAL),
+            }
             # 使用新的LLM配置系统获取当前配置
             current_profile = app_config.get_current_llm_profile(self.config)
             self.llm_advanced_settings = {
@@ -1582,6 +1639,23 @@ class HealJimakuApp(QMainWindow):
                 'language': DEFAULT_FREE_TRANSCRIPTION_LANGUAGE, 'num_speakers': DEFAULT_FREE_TRANSCRIPTION_NUM_SPEAKERS,
                 'tag_audio_events': DEFAULT_FREE_TRANSCRIPTION_TAG_AUDIO_EVENTS,
              }
+            self.cloud_transcription_settings = {
+                'provider': DEFAULT_CLOUD_TRANSCRIPTION_PROVIDER,
+                'elevenlabs_api_key': DEFAULT_ELEVENLABS_API_KEY,
+                'elevenlabs_api_remember_key': DEFAULT_ELEVENLABS_API_REMEMBER_KEY,
+                'elevenlabs_api_language': DEFAULT_ELEVENLABS_API_LANGUAGE,
+                'elevenlabs_api_num_speakers': DEFAULT_ELEVENLABS_API_NUM_SPEAKERS,
+                'elevenlabs_api_enable_diarization': DEFAULT_ELEVENLABS_API_ENABLE_DIARIZATION,
+                'elevenlabs_api_tag_audio_events': DEFAULT_ELEVENLABS_API_TAG_AUDIO_EVENTS,
+                'soniox_api_key': DEFAULT_SONIOX_API_KEY,
+                'soniox_api_remember_key': DEFAULT_SONIOX_API_REMEMBER_KEY,
+                'soniox_language_hints': DEFAULT_SONIOX_LANGUAGE_HINTS.copy(),
+                'soniox_enable_speaker_diarization': DEFAULT_SONIOX_ENABLE_SPEAKER_DIARIZATION,
+                'soniox_enable_language_identification': DEFAULT_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION,
+                'soniox_context_terms': DEFAULT_SONIOX_CONTEXT_TERMS,
+                'soniox_context_text': DEFAULT_SONIOX_CONTEXT_TEXT,
+                'soniox_context_general': DEFAULT_SONIOX_CONTEXT_GENERAL,
+             }
             self.llm_advanced_settings = {
                 USER_LLM_API_BASE_URL_KEY: DEFAULT_LLM_API_BASE_URL, USER_LLM_MODEL_NAME_KEY: DEFAULT_LLM_MODEL_NAME,
                 USER_LLM_API_KEY_KEY: DEFAULT_LLM_API_KEY, USER_LLM_REMEMBER_API_KEY_KEY: DEFAULT_LLM_REMEMBER_API_KEY,
@@ -1637,6 +1711,24 @@ class HealJimakuApp(QMainWindow):
             self.config[USER_BACKGROUND_SOURCE_KEY] = self.background_settings.get('background_source', DEFAULT_BACKGROUND_SOURCE)
             self.config[USER_REMEMBERED_CUSTOM_FOLDER_KEY] = self.background_settings.get('remembered_custom_folder', DEFAULT_REMEMBERED_CUSTOM_FOLDER)
             self.config[USER_REMEMBERED_CUSTOM_IMAGE_KEY] = self.background_settings.get('remembered_custom_image', DEFAULT_REMEMBERED_CUSTOM_IMAGE)
+
+        # 保存云端转录配置
+        if hasattr(self, 'cloud_transcription_settings') and self.cloud_transcription_settings:
+            self.config[USER_CLOUD_TRANSCRIPTION_PROVIDER_KEY] = self.cloud_transcription_settings.get('provider', DEFAULT_CLOUD_TRANSCRIPTION_PROVIDER)
+            self.config[USER_ELEVENLABS_API_KEY_KEY] = self.cloud_transcription_settings.get('elevenlabs_api_key', '')
+            self.config[USER_ELEVENLABS_API_REMEMBER_KEY_KEY] = self.cloud_transcription_settings.get('elevenlabs_api_remember_key', True)
+            self.config[USER_ELEVENLABS_API_LANGUAGE_KEY] = self.cloud_transcription_settings.get('elevenlabs_api_language', 'auto')
+            self.config[USER_ELEVENLABS_API_NUM_SPEAKERS_KEY] = self.cloud_transcription_settings.get('elevenlabs_api_num_speakers', 0)
+            self.config[USER_ELEVENLABS_API_ENABLE_DIARIZATION_KEY] = self.cloud_transcription_settings.get('elevenlabs_api_enable_diarization', True)
+            self.config[USER_ELEVENLABS_API_TAG_AUDIO_EVENTS_KEY] = self.cloud_transcription_settings.get('elevenlabs_api_tag_audio_events', True)
+            self.config[USER_SONIOX_API_KEY_KEY] = self.cloud_transcription_settings.get('soniox_api_key', '')
+            self.config[USER_SONIOX_API_REMEMBER_KEY_KEY] = self.cloud_transcription_settings.get('soniox_api_remember_key', True)
+            self.config[USER_SONIOX_LANGUAGE_HINTS_KEY] = self.cloud_transcription_settings.get('soniox_language_hints', ['ja', 'zh', 'en'])
+            self.config[USER_SONIOX_ENABLE_SPEAKER_DIARIZATION_KEY] = self.cloud_transcription_settings.get('soniox_enable_speaker_diarization', True)
+            self.config[USER_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION_KEY] = self.cloud_transcription_settings.get('soniox_enable_language_identification', True)
+            self.config[USER_SONIOX_CONTEXT_TERMS_KEY] = self.cloud_transcription_settings.get('soniox_context_terms', '')
+            self.config[USER_SONIOX_CONTEXT_TEXT_KEY] = self.cloud_transcription_settings.get('soniox_context_text', '')
+            self.config[USER_SONIOX_CONTEXT_GENERAL_KEY] = self.cloud_transcription_settings.get('soniox_context_general', '')
         
         self.config[USER_LLM_API_BASE_URL_KEY] = self.llm_advanced_settings.get(USER_LLM_API_BASE_URL_KEY, DEFAULT_LLM_API_BASE_URL)
         self.config[USER_LLM_MODEL_NAME_KEY] = self.llm_advanced_settings.get(USER_LLM_MODEL_NAME_KEY, DEFAULT_LLM_MODEL_NAME)
@@ -1681,7 +1773,8 @@ class HealJimakuApp(QMainWindow):
     def browse_json_file(self):
         if not self.json_path_entry: return
         if self._current_input_mode != "local_json":
-            self.log_message("提示：当前为'免费获取JSON'模式，请通过对应对话框选择音频文件。")
+            mode_text = "免费转录" if self._current_input_mode == "free_transcription" else "云端转录"
+            self.log_message(f"提示：当前为'{mode_text}'模式，请通过对应对话框选择音频文件。")
             return
 
         # 优先使用配置中保存的路径
@@ -2163,8 +2256,9 @@ class HealJimakuApp(QMainWindow):
             self._open_free_transcription_dialog()
 
     def _cancel_free_transcription_mode(self):
-        """取消免费转录模式，恢复到本地JSON模式"""
-        self.log_message("用户取消免费转录模式，切换回本地JSON文件模式。")
+        """取消转录模式，恢复到本地JSON模式"""
+        mode_text = "免费转录" if self._current_input_mode == "free_transcription" else "云端转录"
+        self.log_message(f"用户取消{mode_text}模式，切换回本地JSON文件模式。")
         self._current_input_mode = "local_json"
 
         # 清除音频文件路径
@@ -2185,17 +2279,51 @@ class HealJimakuApp(QMainWindow):
         self.save_config()
 
     def _open_free_transcription_dialog(self):
-        """打开免费转录对话框（原来的open_free_transcription_dialog逻辑）"""
-        current_dialog_settings = self.free_transcription_settings.copy()
-        current_dialog_settings['audio_file_path'] = self._temp_audio_file_for_free_transcription or ""
-        
-        dialog = FreeTranscriptionDialog(current_dialog_settings, self)
-        dialog.settings_confirmed.connect(self.apply_free_transcription_settings)
-        
+        """打开云端转录对话框"""
+        dialog = CloudTranscriptionDialog(self)
+
+        # 如果有预设的音频文件，设置到对话框中
+        if self._temp_audio_file_for_free_transcription:
+            dialog.selected_audio_file_path = self._temp_audio_file_for_free_transcription
+            dialog.file_path_entry.setText(self._temp_audio_file_for_free_transcription)
+            dialog.update_file_display()
+
+        # 添加信号连接，确保用户的设置能够生效
+        dialog.settings_confirmed.connect(self.apply_cloud_transcription_settings)
+
         if dialog.exec() == QDialog.DialogCode.Accepted:
             pass
         else:
             self._cancel_free_transcription_mode()
+
+    def apply_cloud_transcription_settings(self, new_settings: dict):
+        """应用云端转录设置"""
+        self._current_input_mode = "cloud_transcription"
+        self._temp_audio_file_for_free_transcription = new_settings.get('audio_file_path')
+
+        # 保存云端转录设置
+        self.cloud_transcription_settings = new_settings.copy()
+
+        # 新增：处理批量音频文件
+        self._batch_audio_files = new_settings.get('audio_files', [])
+
+        if self.json_path_entry:
+            if self._batch_audio_files:
+                # 批量音频模式
+                self.json_path_entry.setText(f"已选择 {len(self._batch_audio_files)} 个音频文件")
+            elif self._temp_audio_file_for_free_transcription:
+                # 单个音频模式
+                provider_name = new_settings.get('provider', 'unknown').replace('_', ' ').title()
+                self.json_path_entry.setText(f"{provider_name}: {os.path.basename(self._temp_audio_file_for_free_transcription)}")
+
+        self._update_input_mode_ui()  # 这会更新按钮文本
+        self.log_message(f"云端转录参数已更新: { {k:v for k,v in new_settings.items() if k not in ['audio_file_path', 'audio_files', 'api_key']} }")
+        if self._batch_audio_files:
+            self.log_message(f"  将批量处理 {len(self._batch_audio_files)} 个音频文件")
+        elif self._temp_audio_file_for_free_transcription:
+            provider_name = new_settings.get('provider', 'unknown').replace('_', ' ').title()
+            self.log_message(f"  将使用 {provider_name} 处理音频文件: {self._temp_audio_file_for_free_transcription}")
+        self.save_config()
 
     def apply_free_transcription_settings(self, new_settings: dict):
         self._current_input_mode = "free_transcription"
@@ -2319,33 +2447,62 @@ class HealJimakuApp(QMainWindow):
             }
 
         # 使用ConversionController处理任务
-        if self._current_input_mode == "free_transcription":
+        if self._current_input_mode in ["free_transcription", "cloud_transcription"]:
             # 检查是否有批量音频文件
             if self._batch_audio_files:
                 # 批量音频处理模式
                 self.log_message(f"检测到 {len(self._batch_audio_files)} 个音频文件，开始批量处理...")
+
+                # 根据 self._current_input_mode 动态设置参数
+                if self._current_input_mode == "free_transcription":
+                    mode = "free_transcription"
+                    source_format = "elevenlabs"  # 免费转录总是使用elevenlabs
+                    cloud_params = None
+                elif self._current_input_mode == "cloud_transcription":
+                    mode = "cloud_transcription"
+                    source_format = self._get_source_format_from_cloud_settings()
+                    cloud_params = self.cloud_transcription_settings
+                    free_transcription_params = None
+                else:
+                    # 默认回退到免费转录模式
+                    mode = "free_transcription"
+                    source_format = "elevenlabs"
+                    cloud_params = None
+
                 self.conversion_controller.start_batch_task(
                     files=self._batch_audio_files,
                     output_dir=output_dir,
-                    mode="free_transcription",
+                    mode=mode,
                     free_params=free_transcription_params,
-                    source_format="elevenlabs"  # 批量音频总是使用elevenlabs
+                    source_format=source_format,
+                    cloud_params=cloud_params
                 )
             else:
                 # 单个音频文件模式
                 if not self._temp_audio_file_for_free_transcription or \
                    not os.path.isfile(self._temp_audio_file_for_free_transcription):
-                    QMessageBox.critical(self, "错误", "请在'免费获取'中选择一个有效的音频文件。")
+                    mode_text = "云端转录" if self._current_input_mode == "cloud_transcription" else "免费转录"
+                    QMessageBox.critical(self, "错误", f"请在'{mode_text}'中选择一个有效的音频文件。")
                     return
 
-                free_transcription_params["audio_file_path"] = self._temp_audio_file_for_free_transcription
-                self.conversion_controller.start_single_task(
-                    input_path="",  # 空字符串表示使用免费转录模式
-                    output_dir=output_dir,
-                    mode="free_transcription",
-                    free_params=free_transcription_params,
-                    source_format="elevenlabs"  # 免费转录总是使用elevenlabs
-                )
+                if self._current_input_mode == "free_transcription":
+                    free_transcription_params["audio_file_path"] = self._temp_audio_file_for_free_transcription
+                    self.conversion_controller.start_single_task(
+                        input_path="",  # 空字符串表示使用转录模式
+                        output_dir=output_dir,
+                        mode="free_transcription",
+                        free_params=free_transcription_params,
+                        source_format="elevenlabs"  # 免费转录总是使用elevenlabs
+                    )
+                else:  # cloud_transcription
+                    self.conversion_controller.start_single_task(
+                        input_path="",  # 空字符串表示使用转录模式
+                        output_dir=output_dir,
+                        mode="cloud_transcription",
+                        free_params=None,
+                        source_format=self._get_source_format_from_cloud_settings(),
+                        cloud_params=self.cloud_transcription_settings
+                    )
 
         elif self._current_input_mode == "local_json":
             # 检查是否有批量文件
@@ -2932,40 +3089,27 @@ class HealJimakuApp(QMainWindow):
         self._open_media_drop_settings_dialog(valid_media_files)
 
     def _open_media_drop_settings_dialog(self, media_files):
-        """打开媒体文件拖拽时的JSON输出设置对话框"""
-        # 准备对话框设置
-        current_dialog_settings = self.free_transcription_settings.copy()
+        """打开媒体文件拖拽时的云端转录设置对话框"""
+        # 创建并显示云端转录对话框
+        dialog = CloudTranscriptionDialog(self)
 
-        # 根据文件数量设置音频文件
-        if len(media_files) == 1:
-            current_dialog_settings['audio_file_path'] = media_files[0]
-            current_dialog_settings['audio_files'] = []
-        else:
-            current_dialog_settings['audio_file_path'] = ""
-            current_dialog_settings['audio_files'] = media_files
-
-        # 创建并显示对话框
-        dialog = FreeTranscriptionDialog(current_dialog_settings, self)
-        dialog.settings_confirmed.connect(lambda settings: self._apply_media_drop_settings(settings, media_files))
-
-        # 预设置文件信息
+        # 预设文件信息
         if len(media_files) == 1:
             dialog.selected_audio_file_path = media_files[0]
-            dialog.audio_file_path_entry.setText(media_files[0])
-            # 单文件模式下启用语言和说话人数选择
-            dialog.language_combo.setEnabled(True)
-            dialog.num_speakers_combo.setEnabled(True)
+            dialog.file_path_entry.setText(media_files[0])
+            dialog.update_file_display()  # 更新文件显示
         else:
             dialog.selected_audio_files = media_files
             dialog.selected_audio_file_path = ""  # 清空单个文件路径
-            dialog.audio_file_path_entry.setText(f"已选择 {len(media_files)} 个音频文件")
-            # 批量文件模式下允许用户调整参数，不强制禁用选项
-            # 保持用户之前的选择或使用默认值
-            dialog.language_combo.setEnabled(True)
-            dialog.num_speakers_combo.setEnabled(True)
+            dialog.file_path_entry.setText(f"已选择 {len(media_files)} 个音频文件")
+            dialog.update_file_display()  # 更新文件显示
+
+        # 添加信号连接，确保用户的设置能够生效
+        dialog.settings_confirmed.connect(self.apply_cloud_transcription_settings)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            # 设置已确认，处理在 _apply_media_drop_settings 中进行
+            # 对话框已确认，云端转录逻辑会在对话框内部处理
+            # 不需要额外处理，因为新对话框会自动处理文件上传和转录流程
             pass
         else:
             # 用户取消设置，恢复到本地JSON模式

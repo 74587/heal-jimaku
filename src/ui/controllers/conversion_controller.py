@@ -49,35 +49,38 @@ class ConversionController(QObject):
         self._free_params = None
         self._source_format = "elevenlabs"
 
-    def start_single_task(self, input_path: str, output_dir: str, mode: str, free_params: Dict[str, Any] = None, source_format: str = "elevenlabs"):
+    def start_single_task(self, input_path: str, output_dir: str, mode: str, free_params: Dict[str, Any] = None, source_format: str = "elevenlabs", cloud_params: Dict[str, Any] = None):
         """
         启动单文件转换任务。
 
         Args:
             input_path: 输入文件路径
             output_dir: 输出目录
-            mode: 处理模式
-            free_params: 免费转录参数
-            source_format: JSON文件格式 (elevenlabs, whisper, deepgram, assemblyai)
+            mode: 处理模式 ("local_json", "free_transcription", "cloud_transcription")
+            free_params: 免费转录参数 (旧版兼容)
+            source_format: JSON文件格式 (elevenlabs, whisper, deepgram, assemblyai, elevenlabs_api, soniox)
+            cloud_params: 云端转录参数
         """
         self._is_batch = False
-        self._start_conversion_worker(input_path, output_dir, mode, free_params, source_format)
+        self._start_conversion_worker(input_path, output_dir, mode, free_params, source_format, cloud_params)
 
-    def start_batch_task(self, files: List[str], output_dir: str, mode: str, free_params: Dict[str, Any] = None, source_format: str = "elevenlabs"):
+    def start_batch_task(self, files: List[str], output_dir: str, mode: str, free_params: Dict[str, Any] = None, source_format: str = "elevenlabs", cloud_params: Dict[str, Any] = None):
         """
         启动批量转换任务。
 
         Args:
             files: 要处理的文件列表
             output_dir: 输出目录
-            mode: 处理模式
-            free_params: 免费转录参数
-            source_format: JSON文件格式 (elevenlabs, whisper, deepgram, assemblyai)
+            mode: 处理模式 ("local_json", "free_transcription", "cloud_transcription")
+            free_params: 免费转录参数 (旧版兼容)
+            source_format: JSON文件格式 (elevenlabs, whisper, deepgram, assemblyai, elevenlabs_api, soniox)
+            cloud_params: 云端转录参数
         """
         self._is_batch = True
         self._batch_queue = list(files)
         self._current_batch_index = 0
         self._output_dir = output_dir
+        self._cloud_params = cloud_params
         self._mode = mode
         self._free_params = free_params
         self._source_format = source_format
@@ -108,25 +111,29 @@ class ConversionController(QObject):
         # 根据模式构建参数
         input_json = ""
         current_free_params = self._free_params.copy() if self._free_params else None
+        current_cloud_params = self._cloud_params.copy() if self._cloud_params else None
 
-        if self._mode == "free_transcription":
+        if self._mode in ["free_transcription", "cloud_transcription"]:
             if current_free_params:
                 current_free_params["audio_file_path"] = current_file
+            if current_cloud_params:
+                current_cloud_params["audio_file_path"] = current_file
         else:
             input_json = current_file
 
-        self._start_conversion_worker(input_json, self._output_dir, self._mode, current_free_params, self._source_format)
+        self._start_conversion_worker(input_json, self._output_dir, self._mode, current_free_params, self._source_format, current_cloud_params)
 
-    def _start_conversion_worker(self, input_path: str, output_dir: str, mode: str, free_params: Dict[str, Any] = None, source_format: str = "elevenlabs"):
+    def _start_conversion_worker(self, input_path: str, output_dir: str, mode: str, free_params: Dict[str, Any] = None, source_format: str = "elevenlabs", cloud_params: Dict[str, Any] = None):
         """
         初始化并启动转换工作线程。
 
         Args:
             input_path: 输入文件路径
             output_dir: 输出目录
-            mode: 处理模式
-            free_params: 免费转录参数
-            source_format: JSON文件格式
+            mode: 处理模式 ("local_json", "free_transcription", "cloud_transcription")
+            free_params: 免费转录参数 (旧版兼容)
+            source_format: JSON文件格式 (elevenlabs, whisper, deepgram, assemblyai, elevenlabs_api, soniox)
+            cloud_params: 云端转录参数
         """
         self.task_started.emit()
 
@@ -152,7 +159,8 @@ class ConversionController(QObject):
             input_mode=mode,
             free_transcription_params=free_params,
             elevenlabs_stt_client=self.elevenlabs_client,
-            llm_config=llm_config
+            llm_config=llm_config,
+            cloud_transcription_params=cloud_params
         )
         self.worker.moveToThread(self.thread)
 

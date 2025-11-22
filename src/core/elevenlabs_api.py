@@ -255,3 +255,166 @@ class ElevenLabsSTTClient:
         # Fallback, should ideally be caught by specific exceptions above
         return None
 
+    def transcribe_audio_official_api(self, audio_file_path: str, api_key: str,
+                                    language_code: Optional[str] = None,
+                                    num_speakers: int = 0,
+                                    enable_diarization: bool = True,
+                                    tag_audio_events: bool = True) -> Optional[Dict]:
+        """
+        使用ElevenLabs官方API进行音频转录
+
+        Args:
+            audio_file_path: 音频文件路径
+            api_key: ElevenLabs API密钥
+            language_code: 语言代码 (None为自动检测)
+            num_speakers: 说话人数量 (0为自动检测)
+            enable_diarization: 是否启用说话人分离
+            tag_audio_events: 是否标记音频事件
+
+        Returns:
+            转录结果字典或None
+        """
+        try:
+            self._log("开始使用ElevenLabs官方API转录音频...")
+
+            # 检查文件是否存在
+            if not os.path.exists(audio_file_path):
+                self._log(f"错误: 音频文件未找到: {audio_file_path}")
+                return None
+
+            # 官方API端点
+            api_url = "https://api.elevenlabs.io/v1/speech-to-text/convert"
+
+            # 构建请求头
+            headers = {
+                "xi-api-key": api_key,
+                "Accept": "application/json"
+            }
+
+            # 构建请求数据
+            data = {
+                "model_id": "scribe_v1",  # 必须使用scribe_v1模型
+                "timestamps_granularity": "word"  # 必须设置为word以获取词级时间戳
+            }
+
+            # 添加可选参数
+            if language_code and language_code != "auto":
+                data["language_code"] = language_code
+
+            if num_speakers > 0:
+                data["num_speakers"] = str(num_speakers)
+
+            data["diarize"] = "true" if enable_diarization else "false"
+            data["tag_audio_events"] = "true" if tag_audio_events else "false"
+
+            self._log(f"API参数: model=scribe_v1, language={language_code or 'auto'}, "
+                     f"speakers={num_speakers or 'auto'}, diarize={enable_diarization}, "
+                     f"tag_events={tag_audio_events}")
+
+            # 获取音频信息
+            duration, file_size = self.get_audio_info(audio_file_path)
+            if duration:
+                self._log(f"音频信息: 时长={duration:.2f}秒, 大小={file_size:.2f}MB")
+
+            # 发送请求
+            with open(audio_file_path, "rb") as audio_file:
+                files = {"file": audio_file}
+                self._log("正在上传音频文件到ElevenLabs...")
+
+                response = requests.post(
+                    api_url,
+                    headers=headers,
+                    data=data,
+                    files=files,
+                    timeout=600  # 10分钟超时
+                )
+
+            # 检查响应
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+
+                    # 添加元数据
+                    result["elevenlabs_api_metadata"] = {
+                        "api_type": "official",
+                        "model_id": "scribe_v1",
+                        "language_code": language_code,
+                        "num_speakers": num_speakers,
+                        "enable_diarization": enable_diarization,
+                        "tag_audio_events": tag_audio_events,
+                        "audio_duration": duration,
+                        "audio_file_size_mb": file_size
+                    }
+
+                    self._log("ElevenLabs官方API转录成功完成！")
+                    return result
+
+                except json.JSONDecodeError as e:
+                    self._log(f"错误: 无法解析API响应JSON: {e}")
+                    self._log(f"原始响应: {response.text[:500]}...")
+                    return None
+
+            else:
+                self._log(f"错误: API请求失败，状态码: {response.status_code}")
+                try:
+                    error_info = response.json()
+                    self._log(f"错误详情: {error_info}")
+                except:
+                    self._log(f"响应内容: {response.text[:500]}...")
+                return None
+
+        except requests.exceptions.Timeout:
+            self._log("错误: API请求超时 (10分钟)")
+            return None
+        except requests.exceptions.RequestException as e:
+            self._log(f"错误: API请求失败: {e}")
+            return None
+        except Exception as e:
+            self._log(f"错误: 转录过程中发生未知错误: {e}")
+            import traceback
+            self._log(traceback.format_exc())
+            return None
+
+    def test_official_api_connection(self, api_key: str) -> Tuple[bool, str]:
+        """
+        测试ElevenLabs官方API连接
+
+        Args:
+            api_key: ElevenLabs API密钥
+
+        Returns:
+            (是否成功, 消息)
+        """
+        try:
+            self._log("测试ElevenLabs官方API连接...")
+
+            # 使用用户API端点测试
+            test_url = "https://api.elevenlabs.io/v1/user"
+            headers = {
+                "xi-api-key": api_key,
+                "Accept": "application/json"
+            }
+
+            response = requests.get(test_url, headers=headers, timeout=30)
+
+            if response.status_code == 200:
+                user_info = response.json()
+                subscription_info = user_info.get("subscription", {})
+                character_limit = subscription_info.get("character_limit", 0)
+                character_count = subscription_info.get("character_count", 0)
+
+                self._log("API连接成功！")
+                return True, f"连接成功！订阅字符限制: {character_limit:,}, 已用: {character_count:,}"
+
+            elif response.status_code == 401:
+                return False, "API密钥无效或已过期"
+            else:
+                return False, f"API测试失败，状态码: {response.status_code}"
+
+        except requests.exceptions.Timeout:
+            return False, "API请求超时"
+        except requests.exceptions.RequestException as e:
+            return False, f"网络请求失败: {e}"
+        except Exception as e:
+            return False, f"测试连接异常: {e}"
+

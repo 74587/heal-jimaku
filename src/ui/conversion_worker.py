@@ -10,11 +10,13 @@ from core.srt_processor import SrtProcessor
 from core.llm_api import call_llm_api_for_segmentation
 from core.data_models import ParsedTranscription
 from core.elevenlabs_api import ElevenLabsSTTClient
+from core.soniox_api import SonioxClient, SonioxTranscriptionConfig
 from config import (
     USER_LLM_API_KEY_KEY, DEFAULT_LLM_API_KEY,
     USER_LLM_API_BASE_URL_KEY, DEFAULT_LLM_API_BASE_URL,
     USER_LLM_MODEL_NAME_KEY, DEFAULT_LLM_MODEL_NAME,
-    USER_LLM_TEMPERATURE_KEY, DEFAULT_LLM_TEMPERATURE
+    USER_LLM_TEMPERATURE_KEY, DEFAULT_LLM_TEMPERATURE,
+    CLOUD_PROVIDER_ELEVENLABS_WEB, CLOUD_PROVIDER_ELEVENLABS_API, CLOUD_PROVIDER_SONIOX_API
 )
 
 class WorkerSignals(QObject):
@@ -37,6 +39,7 @@ class ConversionWorker(QObject):
                  free_transcription_params: Optional[Dict[str, Any]],
                  elevenlabs_stt_client: ElevenLabsSTTClient,
                  llm_config: Dict[str, Any],
+                 cloud_transcription_params: Optional[Dict[str, Any]] = None,
                  parent: Optional[QObject] = None):
         super().__init__(parent)
         self.signals = WorkerSignals()
@@ -47,9 +50,13 @@ class ConversionWorker(QObject):
         self.source_format = source_format
         self.input_mode = input_mode
         self.free_transcription_params = free_transcription_params
+        self.cloud_transcription_params = cloud_transcription_params
         self.elevenlabs_stt_client = elevenlabs_stt_client
 
         self.llm_config = llm_config
+
+        # 初始化Soniox客户端（如果需要）
+        self.soniox_client = None
 
         # 设置信号转发器，用于子组件与主线程通信
         if self.srt_processor and hasattr(self.srt_processor, 'set_signals_forwarder'):
@@ -91,12 +98,12 @@ class ConversionWorker(QObject):
             self.signals.progress.emit(PROGRESS_INIT)
             current_overall_progress = PROGRESS_INIT
 
-            # 免费转录模式：使用ElevenLabs API进行音频转录
+            # 免费转录模式：使用ElevenLabs Web API进行音频转录
             if self.input_mode == "free_transcription":
                 if not self.free_transcription_params or not self.free_transcription_params.get("audio_file_path"):
                     self.signals.finished.emit("错误：免费转录模式下未提供音频文件参数。", False); return
 
-                self.signals.log_message.emit("--- 开始免费在线转录 (ElevenLabs) ---")
+                self.signals.log_message.emit("--- 开始免费在线转录 (ElevenLabs Web) ---")
                 audio_path = self.free_transcription_params["audio_file_path"]
                 lang_from_dialog = self.free_transcription_params.get("language")
                 num_speakers = self.free_transcription_params.get("num_speakers")
@@ -106,19 +113,19 @@ class ConversionWorker(QObject):
                     audio_file_path=audio_path, language_code=lang_from_dialog,
                     num_speakers=num_speakers, tag_audio_events=tag_events
                 )
-                if not self.is_running: self.signals.finished.emit("任务在ElevenLabs API调用后被取消。", False); return
-                if transcription_data is None: self.signals.finished.emit("ElevenLabs API 转录失败或返回空。", False); return
+                if not self.is_running: self.signals.finished.emit("任务在ElevenLabs Web API调用后被取消。", False); return
+                if transcription_data is None: self.signals.finished.emit("ElevenLabs Web API 转录失败或返回空。", False); return
 
                 current_overall_progress = PROGRESS_STT_COMPLETE_FREE
                 self.signals.progress.emit(current_overall_progress)
 
                 # 保存转录结果为JSON文件
                 base_name = os.path.splitext(os.path.basename(audio_path))[0]
-                generated_json_path = os.path.join(self.output_dir, f"{base_name}_elevenlabs_transcript.json")
+                generated_json_path = os.path.join(self.output_dir, f"{base_name}_elevenlabs_web_transcript.json")
                 try:
                     with open(generated_json_path, "w", encoding="utf-8") as f_json:
                         json.dump(transcription_data, f_json, ensure_ascii=False, indent=4)
-                    self.signals.log_message.emit(f"ElevenLabs转录结果已保存到: {generated_json_path}")
+                    self.signals.log_message.emit(f"ElevenLabs Web转录结果已保存到: {generated_json_path}")
                     self.signals.free_transcription_json_generated.emit(generated_json_path)
                 except IOError as e:
                     self.signals.finished.emit(f"保存ElevenLabs转录JSON失败: {e}", False); return
@@ -127,6 +134,119 @@ class ConversionWorker(QObject):
 
                 current_overall_progress = PROGRESS_JSON_SAVED_FREE
                 self.signals.progress.emit(current_overall_progress)
+
+            # 云端转录模式：支持多种服务商
+            elif self.input_mode == "cloud_transcription":
+                if not self.cloud_transcription_params or not self.cloud_transcription_params.get("audio_file_path"):
+                    self.signals.finished.emit("错误：云端转录模式下未提供音频文件参数。", False); return
+
+                audio_path = self.cloud_transcription_params["audio_file_path"]
+                provider = self.cloud_transcription_params.get("provider", CLOUD_PROVIDER_ELEVENLABS_WEB)
+
+                self.signals.log_message.emit(f"--- 开始云端转录 ({provider}) ---")
+                transcription_data = None
+                actual_source_format = None
+
+                try:
+                    if provider == CLOUD_PROVIDER_ELEVENLABS_WEB:
+                        # 使用现有的ElevenLabs Web客户端
+                        self.signals.log_message.emit("使用ElevenLabs (Web/Free) 服务")
+                        lang_from_dialog = self.cloud_transcription_params.get("language", "auto")
+                        num_speakers = self.cloud_transcription_params.get("num_speakers", 0)
+                        tag_events = self.cloud_transcription_params.get("tag_audio_events", True)
+
+                        transcription_data = self.elevenlabs_stt_client.transcribe_audio(
+                            audio_file_path=audio_path, language_code=lang_from_dialog,
+                            num_speakers=num_speakers, tag_audio_events=tag_events
+                        )
+                        actual_source_format = "elevenlabs"
+
+                    elif provider == CLOUD_PROVIDER_ELEVENLABS_API:
+                        # 使用ElevenLabs官方API
+                        self.signals.log_message.emit("使用ElevenLabs (API/Paid) 服务")
+                        api_key = self.cloud_transcription_params.get("api_key")
+                        if not api_key:
+                            self.signals.finished.emit("错误：ElevenLabs API模式需要API密钥。", False); return
+
+                        lang_from_dialog = self.cloud_transcription_params.get("language", "auto")
+                        num_speakers = self.cloud_transcription_params.get("num_speakers", 0)
+                        enable_diarization = self.cloud_transcription_params.get("enable_diarization", True)
+                        tag_events = self.cloud_transcription_params.get("tag_audio_events", True)
+
+                        transcription_data = self.elevenlabs_stt_client.transcribe_audio_official_api(
+                            audio_file_path=audio_path, api_key=api_key,
+                            language_code=lang_from_dialog, num_speakers=num_speakers,
+                            enable_diarization=enable_diarization, tag_audio_events=tag_events
+                        )
+                        actual_source_format = "elevenlabs_api"
+
+                    elif provider == CLOUD_PROVIDER_SONIOX_API:
+                        # 使用Soniox API
+                        self.signals.log_message.emit("使用Soniox (API/Paid) 服务")
+                        api_key = self.cloud_transcription_params.get("api_key")
+                        if not api_key:
+                            self.signals.finished.emit("错误：Soniox API模式需要API密钥。", False); return
+
+                        # 初始化Soniox客户端
+                        self.soniox_client = SonioxClient(signals_forwarder=self.signals)
+
+                        # 构建Soniox配置
+                        language_hints = self.cloud_transcription_params.get("language_hints", ["ja", "zh", "en"])
+                        enable_speaker_diarization = self.cloud_transcription_params.get("enable_speaker_diarization", True)
+                        enable_language_identification = self.cloud_transcription_params.get("enable_language_identification", True)
+                        context_terms = self.cloud_transcription_params.get("context_terms", [])
+                        if isinstance(context_terms, str):
+                            context_terms = [term.strip() for term in context_terms.split('\n') if term.strip()]
+                        context_text = self.cloud_transcription_params.get("context_text", "")
+                        context_general = self.cloud_transcription_params.get("context_general", [])
+
+                        soniox_config = SonioxTranscriptionConfig(
+                            api_key=api_key,
+                            language_hints=language_hints,
+                            enable_speaker_diarization=enable_speaker_diarization,
+                            enable_language_identification=enable_language_identification,
+                            context_terms=context_terms,
+                            context_text=context_text,
+                            context_general=context_general
+                        )
+
+                        transcription_data = self.soniox_client.transcribe_audio_file(audio_path, soniox_config)
+                        actual_source_format = "soniox"
+
+                    else:
+                        self.signals.finished.emit(f"错误：不支持的服务商 '{provider}'", False); return
+
+                    # 检查转录结果
+                    if not self.is_running:
+                        self.signals.finished.emit("任务在云端转录API调用后被取消。", False); return
+
+                    if transcription_data is None:
+                        provider_name = provider.replace("_api", "").replace("_web", "").upper()
+                        self.signals.finished.emit(f"{provider_name}转录失败或返回空。", False); return
+
+                    current_overall_progress = PROGRESS_STT_COMPLETE_FREE
+                    self.signals.progress.emit(current_overall_progress)
+
+                    # 保存转录结果为JSON文件
+                    base_name = os.path.splitext(os.path.basename(audio_path))[0]
+                    provider_suffix = provider.replace("_api", "").replace("_web", "")
+                    generated_json_path = os.path.join(self.output_dir, f"{base_name}_{provider_suffix}_transcript.json")
+
+                    try:
+                        with open(generated_json_path, "w", encoding="utf-8") as f_json:
+                            json.dump(transcription_data, f_json, ensure_ascii=False, indent=4)
+                        self.signals.log_message.emit(f"{provider.upper()}转录结果已保存到: {generated_json_path}")
+                        self.signals.free_transcription_json_generated.emit(generated_json_path)
+                    except IOError as e:
+                        self.signals.finished.emit(f"保存{provider.upper()}转录JSON失败: {e}", False); return
+
+                    self.signals.log_message.emit(f"--- 云端转录 ({provider}) 完成 ---")
+                    current_overall_progress = PROGRESS_JSON_SAVED_FREE
+                    self.signals.progress.emit(current_overall_progress)
+
+                except Exception as e:
+                    provider_name = provider.replace("_api", "").replace("_web", "").upper()
+                    self.signals.finished.emit(f"{provider_name}转录过程中发生错误: {e}", False); return
             else:
                 self.signals.log_message.emit(f"使用本地JSON文件: {os.path.basename(generated_json_path)}")
 

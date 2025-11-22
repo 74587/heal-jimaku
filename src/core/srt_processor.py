@@ -467,6 +467,89 @@ class SrtProcessor:
             if not words_to_process: break 
         return entries
 
+    # --- 智能合并算法辅助函数 (移植自 Scribe2SRT) ---
+    def _is_cjk(self, text: str) -> bool:
+        """检查文本是否包含 CJK (中日韩) 字符"""
+        for char in text:
+            if '\u4e00' <= char <= '\u9fff' or \
+               '\u3040' <= char <= '\u309f' or \
+               '\u30a0' <= char <= '\u30ff' or \
+               '\uac00' <= char <= '\ud7af':
+                return True
+        return False
+
+    def _calculate_cps(self, text: str, duration: float) -> float:
+        """计算每秒字符数 (CPS)"""
+        if duration <= 0: return 999.0
+        # 去除空白字符计算实际字符数
+        char_count = len(re.sub(r'\s+', '', text))
+        return char_count / duration
+
+    def _can_merge_entries(self, entry1: SubtitleEntry, entry2: SubtitleEntry) -> tuple[bool, str]:
+        """检查两个条目是否可以合并"""
+        # 1. 检查音频事件 (Audio Events)
+        # 任何包含音频事件的条目都不应合并
+        is_evt1 = self._is_bracketed_content(entry1.text) or (self._is_audio_event_words(entry1.words_used) if entry1.words_used else False)
+        is_evt2 = self._is_bracketed_content(entry2.text) or (self._is_audio_event_words(entry2.words_used) if entry2.words_used else False)
+        if is_evt1 or is_evt2: return False, "包含音频事件"
+
+        # 2. 检查时间间隔 (Gap)
+        gap = entry2.start_time - entry1.end_time
+        if gap > 2.0: return False, "时间间隔过大"
+        
+        # 3. 检查合并后的时长 (Duration)
+        merged_duration = entry2.end_time - entry1.start_time
+        if merged_duration > self.max_duration: return False, "合并后时长过长"
+
+        # 4. 检查文本长度和 CPS
+        # 确定分隔符：如果是两个 CJK 文本，中间不加空格
+        sep = "" if (self._is_cjk(entry1.text) and self._is_cjk(entry2.text)) else " "
+        merged_text = entry1.text + sep + entry2.text
+        
+        if len(merged_text) > self.max_chars_per_line: return False, "合并后文本过长"
+        
+        cps = self._calculate_cps(merged_text, merged_duration)
+        # 动态 CPS 限制：CJK 稍微严格一点，Latin 宽松一点
+        max_cps = 13.0 if self._is_cjk(merged_text) else 18.0 
+        if cps > max_cps: return False, f"合并后语速过快 (CPS: {cps:.1f})"
+
+        return True, "OK"
+
+    def _calculate_merge_benefit(self, entry1: SubtitleEntry, entry2: SubtitleEntry) -> float:
+        """计算合并收益分数 (分数越高越值得合并)"""
+        score = 0.0
+        
+        # 1. 时长收益：合并过短的条目收益很高
+        if entry1.duration < self.min_duration_target:
+            score += (self.min_duration_target - entry1.duration) * 20
+        if entry2.duration < self.min_duration_target:
+            score += (self.min_duration_target - entry2.duration) * 20
+            
+        # 2. 间隔收益：间隔越小越好
+        gap = entry2.start_time - entry1.end_time
+        if gap < 0.3:
+            score += (0.3 - gap) * 10
+        elif gap < 0.5:
+            score += (0.5 - gap) * 5
+            
+        # 3. 文本长度收益：合并极短文本收益较高
+        if len(entry1.text) < 5: score += 5
+        if len(entry2.text) < 5: score += 5
+        
+        return score
+
+    def _merge_two_entries(self, entry1: SubtitleEntry, entry2: SubtitleEntry) -> SubtitleEntry:
+        """执行合并操作"""
+        # 智能处理空格
+        sep = "" if (self._is_cjk(entry1.text) and self._is_cjk(entry2.text)) else " "
+        merged_text = entry1.text + sep + entry2.text
+        
+        merged_words = (entry1.words_used or []) + (entry2.words_used or [])
+        merged_ratio = min(entry1.alignment_ratio, entry2.alignment_ratio)
+        
+        return SubtitleEntry(0, entry1.start_time, entry2.end_time, merged_text, merged_words, merged_ratio)
+    # --- 智能合并算法结束 ---
+
     def process_to_srt(self, parsed_transcription: ParsedTranscription,
                        llm_segments_text: List[str]
                       ) -> Optional[str]:
@@ -566,49 +649,53 @@ class SrtProcessor:
             self._emit_srt_progress(int( (completed_steps_phase1 / total_llm_segments) * WEIGHT_ALIGN ), 100)
         self.log("--- LLM片段对齐结束 ---")
         if unaligned_segments:
-            self.log(f"\n--- 以下 {len(unaligned_segments)} 个LLM片段未能成功对齐，已跳过 ---")
+            self.log(f"\\n--- 以下 {len(unaligned_segments)} 个LLM片段未能成功对齐，已跳过 ---")
             for seg_idx, seg_text in enumerate(unaligned_segments): self.log(f"- 片段 {seg_idx+1}: \"{seg_text}\"")
-            self.log("----------------------------------------\n")
+            self.log("----------------------------------------\\n")
         if not intermediate_entries: self.log("错误：对齐后没有生成任何有效的字幕条目。"); return None
         intermediate_entries.sort(key=lambda e: e.start_time)
-        self.log("SRT阶段2: 合并调整字幕条目...")
+        
+        # --- Phase 2: 智能合并 (Modified) ---
+        self.log("SRT阶段2: 合并调整字幕条目 (智能收益算法)...")
         merged_entries: List[SubtitleEntry] = []
         idx_merge = 0
         total_intermediate_entries = len(intermediate_entries)
+        
         while idx_merge < total_intermediate_entries:
             if not self._is_worker_running(): self.log("任务被用户中断(合并阶段)。"); return None
-            current_entry_to_merge = intermediate_entries[idx_merge]
+            
+            current_entry = intermediate_entries[idx_merge]
             merged_this_iteration = False
+            
+            # 尝试与下一条合并
             if idx_merge + 1 < len(intermediate_entries):
                 next_entry = intermediate_entries[idx_merge+1]
-                gap_between = next_entry.start_time - current_entry_to_merge.end_time
-                combined_text_len = len(current_entry_to_merge.text) + len(next_entry.text) + 1 
-                combined_duration = next_entry.end_time - current_entry_to_merge.start_time
-                next_is_audio_event = self._is_audio_event_words(next_entry.words_used) if next_entry.words_used else False
-                current_is_audio_event = self._is_bracketed_content(current_entry_to_merge.text)
+                
+                # 检查是否满足合并的基本硬性条件
+                can_merge, reason = self._can_merge_entries(current_entry, next_entry)
+                
+                if can_merge:
+                    # 计算合并收益
+                    benefit = self._calculate_merge_benefit(current_entry, next_entry)
+                    
+                    # 只有收益超过阈值才合并 (Scribe2SRT 默认阈值 5.0)
+                    if benefit > 5.0:
+                        self.log(f"   合并字幕 (收益 {benefit:.1f}): \"{current_entry.text[:15]}...\" + \"{next_entry.text[:15]}...\"")
+                        merged_entry = self._merge_two_entries(current_entry, next_entry)
+                        merged_entries.append(merged_entry)
+                        idx_merge += 2
+                        merged_this_iteration = True
+                    else:
+                        pass
 
-                # 如果任一条目是非语言声音，不合并
-                if current_is_audio_event or next_is_audio_event:
-                    merged_entries.append(current_entry_to_merge)
-                    idx_merge += 1
-                    continue
-
-                if current_entry_to_merge.duration < self.min_duration_target and \
-                   combined_text_len <= self.max_chars_per_line and \
-                   combined_duration <= self.max_duration and \
-                   gap_between < 0.5 and \
-                   combined_duration >= self.min_duration_target :
-                    self.log(f"   合并字幕: \"{current_entry_to_merge.text[:20]}...\" + \"{next_entry.text[:20]}...\"")
-                    merged_text = current_entry_to_merge.text + " " + next_entry.text
-                    merged_start_time = current_entry_to_merge.start_time; merged_end_time = next_entry.end_time 
-                    merged_words = current_entry_to_merge.words_used + next_entry.words_used
-                    merged_ratio = min(current_entry_to_merge.alignment_ratio, next_entry.alignment_ratio)
-                    merged_entries.append(SubtitleEntry(0, merged_start_time, merged_end_time, merged_text, merged_words, merged_ratio))
-                    idx_merge += 2; merged_this_iteration = True
             if not merged_this_iteration:
-                merged_entries.append(current_entry_to_merge); idx_merge += 1
+                merged_entries.append(current_entry)
+                idx_merge += 1
+                
             current_phase2_progress_component = int(((idx_merge) / total_intermediate_entries if total_intermediate_entries > 0 else 1) * WEIGHT_MERGE)
             self._emit_srt_progress(WEIGHT_ALIGN + current_phase2_progress_component, 100)
+        # --- End Phase 2 ---
+
         self.log(f"--- 合并调整后得到 {len(merged_entries)} 个字幕条目，开始最终格式化 ---")
         self.log("SRT阶段3: 最终格式化字幕...")
         final_srt_formatted_list: List[str] = []

@@ -66,6 +66,94 @@ DEFAULT_FREE_TRANSCRIPTION_LANGUAGE = "auto"
 DEFAULT_FREE_TRANSCRIPTION_NUM_SPEAKERS = 0
 DEFAULT_FREE_TRANSCRIPTION_TAG_AUDIO_EVENTS = True
 
+# --- 云端转录 (Cloud Transcription) 功能的配置项键名和默认值 ---
+# 云端转录服务商选择
+USER_CLOUD_TRANSCRIPTION_PROVIDER_KEY = "user_cloud_transcription_provider"
+
+# ElevenLabs API 配置
+USER_ELEVENLABS_API_KEY_KEY = "user_elevenlabs_api_key"
+USER_ELEVENLABS_API_REMEMBER_KEY_KEY = "user_elevenlabs_api_remember_key"
+USER_ELEVENLABS_API_LANGUAGE_KEY = "user_elevenlabs_api_language"
+USER_ELEVENLABS_API_NUM_SPEAKERS_KEY = "user_elevenlabs_api_num_speakers"
+USER_ELEVENLABS_API_ENABLE_DIARIZATION_KEY = "user_elevenlabs_api_enable_diarization"
+USER_ELEVENLABS_API_TAG_AUDIO_EVENTS_KEY = "user_elevenlabs_api_tag_audio_events"
+
+# Soniox API 配置
+USER_SONIOX_API_KEY_KEY = "user_soniox_api_key"
+USER_SONIOX_API_REMEMBER_KEY_KEY = "user_soniox_api_remember_key"
+USER_SONIOX_LANGUAGE_HINTS_KEY = "user_soniox_language_hints"
+USER_SONIOX_ENABLE_SPEAKER_DIARIZATION_KEY = "user_soniox_enable_speaker_diarization"
+USER_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION_KEY = "user_soniox_enable_language_identification"
+USER_SONIOX_CONTEXT_TERMS_KEY = "user_soniox_context_terms"
+USER_SONIOX_CONTEXT_TEXT_KEY = "user_soniox_context_text"
+USER_SONIOX_CONTEXT_GENERAL_KEY = "user_soniox_context_general"
+
+# 云端转录默认值
+DEFAULT_CLOUD_TRANSCRIPTION_PROVIDER = "elevenlabs_web"  # 默认使用免费版
+
+# ElevenLabs API 默认值
+DEFAULT_ELEVENLABS_API_KEY = ""
+DEFAULT_ELEVENLABS_API_REMEMBER_KEY = True
+DEFAULT_ELEVENLABS_API_LANGUAGE = "auto"
+DEFAULT_ELEVENLABS_API_NUM_SPEAKERS = 0
+DEFAULT_ELEVENLABS_API_ENABLE_DIARIZATION = True
+DEFAULT_ELEVENLABS_API_TAG_AUDIO_EVENTS = True
+
+# Soniox API 默认值
+DEFAULT_SONIOX_API_KEY = ""
+DEFAULT_SONIOX_API_REMEMBER_KEY = True
+DEFAULT_SONIOX_LANGUAGE_HINTS = ["ja", "zh", "en"]  # 默认提示中日英
+DEFAULT_SONIOX_ENABLE_SPEAKER_DIARIZATION = True
+DEFAULT_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION = True
+DEFAULT_SONIOX_CONTEXT_TERMS = ""
+DEFAULT_SONIOX_CONTEXT_TEXT = ""
+DEFAULT_SONIOX_CONTEXT_GENERAL = ""
+
+# 云端转录服务商枚举
+CLOUD_PROVIDER_ELEVENLABS_WEB = "elevenlabs_web"      # ElevenLabs (Web/Free)
+CLOUD_PROVIDER_ELEVENLABS_API = "elevenlabs_api"      # ElevenLabs (API/Paid)
+CLOUD_PROVIDER_SONIOX_API = "soniox_api"              # Soniox (API/Paid)
+
+# 支持的语言列表 (用于UI下拉框)
+SUPPORTED_LANGUAGES = [
+    ("auto", "自动检测"),
+    ("ja", "日语"),
+    ("zh", "中文"),
+    ("en", "英文"),
+    ("ko", "韩语"),
+    ("es", "西班牙语"),
+    ("fr", "法语"),
+    ("de", "德语"),
+    ("ru", "俄语"),
+    ("ar", "阿拉伯语"),
+    ("hi", "印地语")
+]
+
+# Soniox 支持的语言 (ISO代码)
+SONIOX_SUPPORTED_LANGUAGES = [
+    ("ja", "日语"),
+    ("zh", "中文"),
+    ("en", "英文"),
+    ("ko", "韩语"),
+    ("es", "西班牙语"),
+    ("fr", "法语"),
+    ("de", "德语"),
+    ("ru", "俄语"),
+    ("ar", "阿拉伯语"),
+    ("hi", "印地语"),
+    ("pt", "葡萄牙语"),
+    ("it", "意大利语"),
+    ("nl", "荷兰语"),
+    ("sv", "瑞典语"),
+    ("no", "挪威语"),
+    ("da", "丹麦语"),
+    ("fi", "芬兰语"),
+    ("pl", "波兰语"),
+    ("tr", "土耳其语"),
+    ("th", "泰语"),
+    ("vi", "越南语")
+]
+
 # --- 背景管理配置项键名和默认值 ---
 USER_CUSTOM_BACKGROUND_FOLDER_KEY = "user_custom_background_folder"
 USER_ENABLE_RANDOM_BACKGROUND_KEY = "user_enable_random_background"
