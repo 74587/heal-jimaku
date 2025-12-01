@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(python:*)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(cp:*)",
+      "Bash(timeout:*)"
     ],
     "deny": [],
     "ask": []

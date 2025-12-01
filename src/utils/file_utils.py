@@ -50,11 +50,18 @@ def setup_faulthandler():
             # GUI应用环境，将日志写入文件
             log_dir_app = ""
             try:
-                home_dir = os.path.expanduser("~")
-                log_dir_app = os.path.join(home_dir, ".heal_jimaku_gui_logs")
+                # 导入新的目录定义
+                import config
+                log_dir_app = config.LOGS_DIR
                 if not os.path.exists(log_dir_app):
                     os.makedirs(log_dir_app, exist_ok=True)
-                crash_log_path = os.path.join(log_dir_app, "heal_jimaku_crashes.log")
+
+                # 确保基础目录结构存在
+                if not os.path.exists(config.BASE_DIR):
+                    os.makedirs(config.BASE_DIR, exist_ok=True)
+                if not os.path.exists(config.CONFIG_DIR):
+                    os.makedirs(config.CONFIG_DIR, exist_ok=True)
+                crash_log_path = config.CRASH_LOG_FILE
                 with open(crash_log_path, 'a', encoding='utf-8') as f_log:
                     faulthandler.enable(file=f_log, all_threads=True)
                 print(f"Faulthandler enabled, logging to: {crash_log_path}")

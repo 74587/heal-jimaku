@@ -5,8 +5,8 @@ LLM API 客户端模块
 支持 OpenAI、Claude、Gemini、DeepSeek 等主流LLM服务商。
 包含文本分割、摘要生成、连接测试等功能。
 
-作者: Heal-Jimaku Project
-版本: 1.3.0
+作者: fuxiaomoke
+版本: 0.2.2.0
 """
 
 import os

@@ -370,12 +370,19 @@ class BackgroundSettingsDialog(QDialog):
         self.setStyleSheet(style)
 
     def _get_user_data_dir(self) -> str:
-        """获取用户数据目录路径"""
+        """获取用户数据目录路径 - 返回固定背景目录"""
+        # 导入新的目录定义
+        import config
+        fixed_backgrounds_dir = os.path.join(config.BASE_DIR, "backgrounds", "fixed")
+        if not os.path.exists(fixed_backgrounds_dir):
+            os.makedirs(fixed_backgrounds_dir, exist_ok=True)
+        return fixed_backgrounds_dir
+
+    def _get_legacy_fixed_backgrounds_dir(self) -> str:
+        """获取旧版本的固定背景目录，用于迁移"""
         home_dir = os.path.expanduser("~")
-        app_data_dir = os.path.join(home_dir, ".heal_jimaku")
-        if not os.path.exists(app_data_dir):
-            os.makedirs(app_data_dir, exist_ok=True)
-        return app_data_dir
+        old_dir = os.path.join(home_dir, ".heal_jimaku", "fixed_backgrounds")
+        return old_dir
 
     def _is_temp_path(self, path: str) -> bool:
         """检查路径是否为临时路径（PyInstaller的_MEIPASS）"""

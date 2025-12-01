@@ -5,8 +5,8 @@
 支持 ElevenLabs、Whisper、Deepgram、AssemblyAI 等多种数据源。
 提供统一的接口将不同格式的转录数据转换为内部标准格式。
 
-作者: Heal-Jimaku Project
-版本: 1.3.0
+作者: fuxiaomoke
+版本: 0.2.2.0
 """
 
 from typing import List, Optional, Literal
@@ -28,7 +28,7 @@ class TranscriptionParser:
         else:
             print(f"[Parser] {message}") # 如果没有信号转发器，则打印到控制台
 
-    def parse(self, data: dict, source_format: Literal["elevenlabs", "whisper", "deepgram", "assemblyai"]) -> Optional[ParsedTranscription]:
+    def parse(self, data: dict, source_format: Literal["elevenlabs", "whisper", "deepgram", "assemblyai", "soniox", "elevenlabs_api"]) -> Optional[ParsedTranscription]:
         """
         解析JSON数据。
         :param data: 包含ASR结果的字典。
@@ -39,6 +39,8 @@ class TranscriptionParser:
         result: Optional[ParsedTranscription] = None
         try:
             if source_format == "elevenlabs": result = self._parse_elevenlabs(data)
+            elif source_format == "elevenlabs_api": result = self._parse_elevenlabs_api(data)
+            elif source_format == "soniox": result = self._parse_soniox(data)
             elif source_format == "whisper": result = self._parse_whisper(data)
             elif source_format == "deepgram": result = self._parse_deepgram(data)
             elif source_format == "assemblyai": result = self._parse_assemblyai(data)
@@ -190,3 +192,132 @@ class TranscriptionParser:
             full_text = " ".join(word.text for word in parsed_words)
         language = data.get("language_code")
         return ParsedTranscription(words=parsed_words, full_text=full_text, language_code=language)
+
+    def _parse_soniox(self, data: dict) -> Optional[ParsedTranscription]:
+        """解析 Soniox 格式的JSON。"""
+        parsed_words: List[TimestampedWord] = []
+        try:
+            # [修复] 更宽容的解析逻辑：如果tokens不存在，不要直接返回None
+            tokens = data.get("tokens", [])
+            
+            if not tokens:
+                # 打印当前JSON的所有顶级键，方便调试
+                keys = list(data.keys())
+                self.log(f"警告: Soniox JSON 中没有找到 'tokens' 列表。可用键: {keys}")
+                
+                # 如果没有tokens但状态是completed，可能是空转录
+                if data.get("status") == "completed":
+                    self.log("提示: 任务状态为 completed 但无 tokens，将视为空转录处理。")
+                    return ParsedTranscription(words=[], full_text="", language_code=None)
+                
+                return None
+
+            for token in tokens:
+                text = token.get("text", "")
+                start_ms = token.get("start_ms")
+                end_ms = token.get("end_ms")
+                speaker = token.get("speaker")
+                confidence = token.get("confidence")
+                is_final = token.get("is_final", False)
+
+                # 只处理最终的tokens，避免重复 (Soniox实时流可能有非最终token，文件转录通常都是最终)
+                # 但为了保险，如果有is_final字段且为False，则跳过
+                if "is_final" in token and not is_final:
+                    continue
+
+                if text and start_ms is not None and end_ms is not None:
+                    try:
+                        # Soniox 时间戳为毫秒，需要转换为秒
+                        start_time = float(start_ms) / 1000.0
+                        end_time = float(end_ms) / 1000.0
+
+                        parsed_words.append(TimestampedWord(
+                            text=str(text),
+                            start_time=start_time,
+                            end_time=end_time,
+                            speaker_id=str(speaker) if speaker else None,
+                            confidence=float(confidence) if confidence is not None else 1.0
+                        ))
+                    except ValueError as e:
+                        self.log(f"警告: 跳过 Soniox token，时间戳格式无效: {token}")
+                else:
+                    # 没有时间戳的token（如翻译token）可能用于其他用途，这里跳过
+                    pass
+
+            # 构建完整文本
+            full_text = data.get("text", "")
+            if not full_text and parsed_words:
+                full_text = " ".join(word.text for word in parsed_words)
+
+            # 尝试从token中检测主要语言
+            language = None
+            if tokens:
+                # 找到第一个有语言标记的token
+                for token in tokens:
+                    if "language" in token:
+                        language = token["language"]
+                        break
+
+            self.log(f"Soniox 解析完成: {len(parsed_words)} 个词，语言: {language or '未知'}")
+
+            # 提取 soniox_metadata（如果存在）
+            soniox_metadata = data.get("soniox_metadata")
+
+            return ParsedTranscription(words=parsed_words, full_text=full_text, language_code=language, soniox_metadata=soniox_metadata)
+
+        except (KeyError, IndexError, TypeError) as e:
+            self.log(f"错误: 解析 Soniox JSON 时出现异常: {e}")
+            traceback.print_exc()
+            return None
+
+    def _parse_elevenlabs_api(self, data: dict) -> Optional[ParsedTranscription]:
+        """解析 ElevenLabs 官方API 格式的JSON。"""
+        parsed_words: List[TimestampedWord] = []
+        try:
+            # ElevenLabs API 的格式与Web版基本相同，都在 words 数组中
+            words = data.get("words", [])
+            if not words:
+                self.log("错误: ElevenLabs API JSON 中没有找到 words 数组")
+                return None
+
+            for word_info in words:
+                # 支持不同的字段名
+                text = word_info.get("text") or word_info.get("word", "")
+                start_time = word_info.get("start")
+                end_time = word_info.get("end")
+                speaker_id = word_info.get("speaker_id") or word_info.get("speaker")
+                word_type = word_info.get("type", "")
+
+                if text and start_time is not None and end_time is not None:
+                    try:
+                        # 过滤掉音频事件，或者保留它们用于后续处理
+                        if word_type == "audio_event":
+                            # 保留音频事件，但不作为词处理
+                            pass
+
+                        parsed_words.append(TimestampedWord(
+                            text=str(text),
+                            start_time=float(start_time),
+                            end_time=float(end_time),
+                            speaker_id=str(speaker_id) if speaker_id else None
+                        ))
+                    except ValueError as e:
+                        self.log(f"警告: 跳过 ElevenLabs API 词条，时间戳格式无效: {word_info}")
+
+            # 构建完整文本
+            full_text = data.get("text", "")
+            if not full_text and parsed_words:
+                # 只包含非音频事件的词来构建文本
+                text_words = [w for w in parsed_words if not w.text.startswith("(") or not w.text.endswith(")")]
+                full_text = " ".join(word.text for word in text_words)
+
+            # 尝试获取语言代码
+            language = data.get("language_code")
+
+            self.log(f"ElevenLabs API 解析完成: {len(parsed_words)} 个词，语言: {language or '未知'}")
+            return ParsedTranscription(words=parsed_words, full_text=full_text, language_code=language)
+
+        except (KeyError, IndexError, TypeError) as e:
+            self.log(f"错误: 解析 ElevenLabs API JSON 时出现异常: {e}")
+            traceback.print_exc()
+            return None

@@ -39,15 +39,34 @@ from config import (
     DEFAULT_CUSTOM_BACKGROUND_FOLDER, DEFAULT_ENABLE_RANDOM_BACKGROUND,
     DEFAULT_FIXED_BACKGROUND_PATH, DEFAULT_BACKGROUND_SOURCE,
     DEFAULT_REMEMBERED_CUSTOM_FOLDER, DEFAULT_REMEMBERED_CUSTOM_IMAGE,
-    BACKGROUND_SOURCE_USER_SELECTED, BACKGROUND_SOURCE_CAROUSEL_FIXED
+    BACKGROUND_SOURCE_USER_SELECTED, BACKGROUND_SOURCE_CAROUSEL_FIXED,
+    # 云端转录配置
+    USER_CLOUD_TRANSCRIPTION_PROVIDER_KEY,
+    USER_ELEVENLABS_API_KEY_KEY, USER_ELEVENLABS_API_REMEMBER_KEY_KEY,
+    USER_ELEVENLABS_API_LANGUAGE_KEY, USER_ELEVENLABS_API_NUM_SPEAKERS_KEY,
+    USER_ELEVENLABS_API_ENABLE_DIARIZATION_KEY, USER_ELEVENLABS_API_TAG_AUDIO_EVENTS_KEY,
+    USER_SONIOX_API_KEY_KEY, USER_SONIOX_API_REMEMBER_KEY_KEY,
+    USER_SONIOX_LANGUAGE_HINTS_KEY, USER_SONIOX_ENABLE_SPEAKER_DIARIZATION_KEY,
+    USER_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION_KEY, USER_SONIOX_CONTEXT_TERMS_KEY,
+    USER_SONIOX_CONTEXT_TEXT_KEY, USER_SONIOX_CONTEXT_GENERAL_KEY,
+    DEFAULT_CLOUD_TRANSCRIPTION_PROVIDER,
+    DEFAULT_ELEVENLABS_API_KEY, DEFAULT_ELEVENLABS_API_REMEMBER_KEY,
+    DEFAULT_ELEVENLABS_API_LANGUAGE, DEFAULT_ELEVENLABS_API_NUM_SPEAKERS,
+    DEFAULT_ELEVENLABS_API_ENABLE_DIARIZATION, DEFAULT_ELEVENLABS_API_TAG_AUDIO_EVENTS,
+    DEFAULT_SONIOX_API_KEY, DEFAULT_SONIOX_API_REMEMBER_KEY,
+    DEFAULT_SONIOX_LANGUAGE_HINTS, DEFAULT_SONIOX_ENABLE_SPEAKER_DIARIZATION,
+    DEFAULT_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION, DEFAULT_SONIOX_CONTEXT_TERMS,
+    DEFAULT_SONIOX_CONTEXT_TEXT, DEFAULT_SONIOX_CONTEXT_GENERAL
 )
 
 from utils.file_utils import resource_path
+from utils.user_friendly_logger import user_logger, MessageLevel
 from .custom_widgets import TransparentWidget, CustomLabel, CustomLabel_title, StrokeCheckBoxWidget
 from .conversion_worker import ConversionWorker
 from .controllers.conversion_controller import ConversionController
 from core.srt_processor import SrtProcessor
 from .settings_dialog import SettingsDialog
+from .cloud_transcription_dialog import CloudTranscriptionDialog
 from .free_transcription_dialog import FreeTranscriptionDialog
 from core.elevenlabs_api import ElevenLabsSTTClient
 from .llm_advanced_settings_dialog import LlmAdvancedSettingsDialog, LlmTestWorker
@@ -123,6 +142,7 @@ class HealJimakuApp(QMainWindow):
         self.log_area_early_messages: list[str] = []
         self.advanced_srt_settings: Dict[str, Any] = {}
         self.free_transcription_settings: Dict[str, Any] = {}
+        self.cloud_transcription_settings: Dict[str, Any] = {}
         self.llm_advanced_settings: Dict[str, Any] = {}
         self._current_input_mode = "local_json"
         self._temp_audio_file_for_free_transcription: Optional[str] = None
@@ -162,6 +182,7 @@ class HealJimakuApp(QMainWindow):
         self.json_path_entry: Optional[QLineEdit] = None
         self.json_browse_button: Optional[QPushButton] = None
         self.json_format_combo: Optional[QComboBox] = None
+        self.ai_correction_check: Optional[StrokeCheckBoxWidget] = None
         self.output_path_entry: Optional[QLineEdit] = None
         self.output_browse_button: Optional[QPushButton] = None
         self.progress_bar: Optional[QProgressBar] = None
@@ -678,20 +699,32 @@ class HealJimakuApp(QMainWindow):
         if not self.json_path_entry or not self.json_browse_button or not self.json_format_combo:
             return
 
-        if self._current_input_mode == "free_transcription":
+        if self._current_input_mode in ["free_transcription", "cloud_transcription"]:
             self.json_path_entry.setEnabled(False)
             self.json_browse_button.setEnabled(False)
             self.json_format_combo.setEnabled(False)
-            self.json_path_entry.setPlaceholderText("通过'免费获取JSON'模式提供音频文件")
-            
-            # 新增：更新按钮文本为取消模式
+
+            if self._current_input_mode == "free_transcription":
+                self.json_path_entry.setPlaceholderText("通过'免费转录'模式提供音频文件")
+                button_text = "取消免费转录"
+            elif self._current_input_mode == "cloud_transcription":
+                # 进一步区分是免费ElevenLabs还是付费服务
+                if (hasattr(self, 'cloud_transcription_settings') and
+                    self.cloud_transcription_settings.get('provider') == 'elevenlabs_api'):
+                    self.json_path_entry.setPlaceholderText("通过'付费ElevenLabs'模式提供音频文件")
+                    button_text = "取消云端转录"
+                else:
+                    self.json_path_entry.setPlaceholderText("通过'云端转录'模式提供音频文件")
+                    button_text = "取消云端转录"
+
+            # 更新按钮文本为取消模式
             if self.free_transcription_button:
-                self.free_transcription_button.setText("取消转录音频模式")
+                self.free_transcription_button.setText(button_text)
                 self.free_transcription_button.setProperty("cancelMode", True)
                 self.free_transcription_button.style().unpolish(self.free_transcription_button)
                 self.free_transcription_button.style().polish(self.free_transcription_button)
                 self._free_transcription_button_is_in_cancel_mode = True
-            
+
             elevenlabs_index = self.json_format_combo.findText("ElevenLabs(推荐)")
             if elevenlabs_index != -1:
                 self.json_format_combo.setCurrentIndex(elevenlabs_index)
@@ -700,19 +733,40 @@ class HealJimakuApp(QMainWindow):
             self.json_browse_button.setEnabled(True)
             self.json_format_combo.setEnabled(True)
             self.json_path_entry.setPlaceholderText("选择包含ASR结果的 JSON 文件")
-            
+
             # 新增：恢复按钮文本为正常模式
             if self.free_transcription_button:
-                self.free_transcription_button.setText("免费获取JSON")
+                self.free_transcription_button.setText("云端获取JSON")
                 self.free_transcription_button.setProperty("cancelMode", False)
                 self.free_transcription_button.style().unpolish(self.free_transcription_button)
                 self.free_transcription_button.style().polish(self.free_transcription_button)
                 self._free_transcription_button_is_in_cancel_mode = False
-            
+
             last_format = self.config.get('last_source_format', 'ElevenLabs(推荐)')
             last_format_index = self.json_format_combo.findText(last_format)
             if last_format_index != -1:
                  self.json_format_combo.setCurrentIndex(last_format_index)
+
+        # 更新AI纠错复选框状态
+        self._on_format_changed()
+
+    def _on_format_changed(self):
+        """当JSON格式变化时，控制AI纠错复选框的状态"""
+        if not self.ai_correction_check or not self.json_format_combo:
+            return
+
+        current_format = self.json_format_combo.currentText()
+        is_soniox = "Soniox" in current_format
+
+        if is_soniox:
+            # Soniox格式：启用复选框
+            self.ai_correction_check.setEnabled(True)
+            self.ai_correction_check.setToolTip("Soniox格式支持AI错词校对，会消耗Token")
+        else:
+            # 非Soniox格式：禁用复选框
+            self.ai_correction_check.setEnabled(False)
+            self.ai_correction_check.setChecked(False)  # 切换格式时自动取消勾选
+            self.ai_correction_check.setToolTip("AI错词校对仅支持Soniox格式")
 
     def init_ui(self):
         # 设置窗口样式
@@ -983,13 +1037,13 @@ class HealJimakuApp(QMainWindow):
         self.json_browse_button = QPushButton("浏览...")
         self.json_browse_button.setObjectName("browseButton")
         self.json_browse_button.clicked.connect(self.browse_json_file)
-        # 统一按钮长度，与"免费获取JSON"按钮保持一致
-        self.json_browse_button.setFixedWidth(100)  # 设置固定宽度
+        self.json_browse_button.setFixedWidth(100)  # 与导出区域按钮保持一致
         json_input_line_layout.addWidget(self.json_browse_button, 0)  # 按钮不拉伸
 
-        self.free_transcription_button = QPushButton("免费获取JSON")
+        self.free_transcription_button = QPushButton("云端获取JSON")
         self.free_transcription_button.setObjectName("freeButton")
         self.free_transcription_button.clicked.connect(self.handle_free_transcription_button_click)
+        self.free_transcription_button.setFixedWidth(100)  # 与导出区域按钮保持一致
         json_input_line_layout.addWidget(self.free_transcription_button, 0)  # 按钮不拉伸
 
         file_layout.addLayout(json_input_line_layout)
@@ -999,8 +1053,11 @@ class HealJimakuApp(QMainWindow):
         format_label = CustomLabel("JSON 格式:")
         format_label.setFont(QFont(self.custom_font_family, 13, QFont.Weight.Bold))
         self.json_format_combo = QComboBox()
-        self.json_format_combo.addItems(["ElevenLabs(推荐)", "Whisper(推荐)", "Deepgram", "AssemblyAI"])
+        self.json_format_combo.addItems(["ElevenLabs(推荐)", "Soniox(推荐)", "Whisper(推荐)", "Deepgram", "AssemblyAI"])
         self.json_format_combo.setObjectName("formatCombo")
+
+        # 监听格式变化以控制AI纠错复选框
+        self.json_format_combo.currentTextChanged.connect(self._on_format_changed)
 
         # 设置字体大小并调整下拉框尺寸
         combo_font = QFont(self.custom_font_family, 16)  # 进一步放大字体到16px
@@ -1025,6 +1082,13 @@ class HealJimakuApp(QMainWindow):
 
         format_layout.addWidget(format_label, 0)  # 标签不拉伸
         format_layout.addWidget(self.json_format_combo, 1)  # 下拉框占主要空间
+
+        # 添加AI纠错复选框在格式选择右侧
+        self.ai_correction_check = StrokeCheckBoxWidget("启用AI错词校对")
+        self.ai_correction_check.setChecked(False)  # 默认不勾选
+        self.ai_correction_check.setToolTip("仅对Soniox格式的JSON文件有效，会消耗Token进行AI纠错")
+        format_layout.addWidget(self.ai_correction_check, 0)  # 复选框不拉伸
+
         file_layout.addLayout(format_layout)
 
         export_group = QGroupBox("导出与控制")
@@ -1041,7 +1105,7 @@ class HealJimakuApp(QMainWindow):
         self.output_browse_button = QPushButton("浏览...")
         self.output_browse_button.setObjectName("browseButton")
         self.output_browse_button.clicked.connect(self.select_output_dir)
-        # 统一按钮长度，与"免费获取JSON"按钮保持一致
+        # 统一按钮长度，与"云端转录"按钮保持一致
         self.output_browse_button.setFixedWidth(100)  # 设置固定宽度
         output_layout.addWidget(output_label, 0)  # 标签不拉伸
         output_layout.addWidget(self.output_path_entry, 1)  # 输入框占主要空间
@@ -1060,6 +1124,8 @@ class HealJimakuApp(QMainWindow):
         self.start_button.setFont(QFont('楷体', 14, QFont.Weight.Bold))
         self.start_button.setObjectName("startButton")
         self.start_button.clicked.connect(self.start_conversion)
+        # 设置默认样式（蓝色）
+        self.start_button.setStyleSheet(self._get_default_start_btn_style())
         export_layout.addWidget(self.start_button)
 
         log_group = QGroupBox("日志")
@@ -1212,7 +1278,7 @@ class HealJimakuApp(QMainWindow):
         input_bg = "rgba(255, 255, 255, 30)"; input_hover_bg = "rgba(255, 255, 255, 40)"
         input_focus_bg = "rgba(255, 255, 255, 50)"; input_border_color = "rgba(135, 206, 235, 90)"
         input_focus_border_color = "#87CEEB"
-        log_bg = "rgba(0, 0, 0, 55)"; log_text_custom_color = "#F0783C"
+        log_bg = "rgba(0, 0, 0, 55)"; log_text_custom_color = "#E1F5FE"
         combo_dropdown_bg = "rgba(250, 250, 250, 235)"; combo_dropdown_text_color = "#2c3e50"
         combo_dropdown_border_color = "rgba(135, 206, 235, 150)"
         combo_dropdown_selection_bg = button_blue_hover; combo_dropdown_selection_text_color = "#FFFFFF"
@@ -1253,10 +1319,14 @@ class HealJimakuApp(QMainWindow):
             QGroupBox#logGroup::title {{ subcontrol-origin:padding; subcontrol-position:top left; left:15px; padding:2px 5px; color:{group_title_red}; font:bold 14.7pt '{self.custom_font_family}'; top:-5px; }}
             QLineEdit#apiKeyEdit, QLineEdit#pathEdit {{ background-color:{input_bg}; color:{input_text_red}; border:1px solid {input_border_color}; border-radius:5px; padding:6px; font:bold 11pt '{self.custom_font_family}'; min-height:1.8em; }}
             QLineEdit#apiKeyEdit:hover, QLineEdit#pathEdit:hover {{ background-color:{input_hover_bg}; border:1px solid {input_focus_border_color}; }}
+        QPushButton#startButton:hover {{ background-color:{input_hover_bg}; }}
             QLineEdit#apiKeyEdit:focus, QLineEdit#pathEdit:focus {{ background-color:{input_focus_bg}; border:1px solid {input_focus_border_color}; }}
             QLineEdit#apiKeyEdit {{ font-family:'Consolas','Courier New',monospace; font-size:12pt; font-weight:bold; }}
+            QPushButton#browseButton:hover, QPushButton#startButton:hover {{ background-color:{input_hover_bg}; }}
+            QLineEdit#apiKeyEdit:hover, QLineEdit#pathEdit:hover {{ background-color:{input_hover_bg}; border:1px solid {input_focus_border_color}; }}
             QPushButton#browseButton, QPushButton#startButton {{ background-color:{button_blue_bg}; color:white; border:none; border-radius:5px; font-family:'{self.custom_font_family}'; font-weight:bold; }}
             QPushButton#browseButton {{ padding:6px 15px; font-size:10pt; }}
+            QPushButton#startButton:hover {{ background-color:{input_hover_bg}; }}
             QPushButton#batchButton {{
                 background-color:{batch_button_bg}; color:white; border:none; border-radius:5px;
                 font-family:'{self.custom_font_family}'; font-weight:bold; font-size:10pt; padding:6px 15px;
@@ -1299,7 +1369,7 @@ class HealJimakuApp(QMainWindow):
             QPushButton#settingsButton:hover, QPushButton#llmSettingsButton:hover, QPushButton#backgroundSettingsButton:hover {{ background-color:{settings_btn_hover}; }}
             QProgressBar#progressBar {{ border:1px solid rgba(135,206,235,80); border-radius:5px; text-align:center; background:rgba(0,0,0,40); height:22px; color:#f0f0f0; font-weight:bold; }}
             QProgressBar#progressBar::chunk {{ background-color:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #5C8A6F,stop:1 #69CFF7); border-radius:5px; }}
-            QTextEdit#logArea {{ background-color:{log_bg}; border:1px solid rgba(135,206,235,80); border-radius:5px; color:{log_text_custom_color}; font-family:'{self.custom_font_family}'; font-size:10pt; font-weight:bold;}}
+            QTextEdit#logArea {{ background-color:{log_bg}; border:1px solid rgba(135,206,235,80); border-radius:5px; color:{log_text_custom_color}; font-family:'{self.custom_font_family}'; font-size:11pt; font-weight:bold;}}
             QComboBox#formatCombo {{
                 background-color:{input_bg}; color:{input_text_red};
                 border:1px solid {input_border_color}; border-radius:5px;
@@ -1344,28 +1414,93 @@ class HealJimakuApp(QMainWindow):
         selected_text = self.json_format_combo.currentText()
         source_format_map = {
             "ElevenLabs(推荐)": "elevenlabs",
+            "Soniox(推荐)": "soniox",
             "Whisper(推荐)": "whisper",
             "Deepgram": "deepgram",
             "AssemblyAI": "assemblyai"
         }
         return source_format_map.get(selected_text, "elevenlabs")
 
-    def log_message(self, message: str):
-        """简单的日志记录"""
+    def _get_source_format_from_cloud_settings(self):
+        """从云端转录设置获取源格式"""
+        if not hasattr(self, 'cloud_transcription_settings') or not self.cloud_transcription_settings:
+            return "elevenlabs"
+
+        provider = self.cloud_transcription_settings.get('provider', 'elevenlabs_web')
+        format_map = {
+            'elevenlabs_web': 'elevenlabs',
+            'elevenlabs_api': 'elevenlabs_api',
+            'soniox_api': 'soniox'
+        }
+        return format_map.get(provider, 'elevenlabs')
+
+    def log_message(self, message: str, use_user_friendly: bool = True):
+        """
+        日志记录，支持用户友好的消息转换
+
+        Args:
+            message: 要记录的消息
+            use_user_friendly: 是否使用用户友好的消息转换（默认True）
+        """
         if self.log_area and self.log_area.isVisible():
             # 添加时间戳
             from datetime import datetime
             timestamp = datetime.now().strftime("%H:%M:%S")
-            formatted_message = f"[{timestamp}] {message}"
 
-            self.log_area.append(formatted_message)
+            # 使用用户友好的消息转换
+            if use_user_friendly:
+                formatted_message = user_logger.format_user_message(message)
+                # 获取消息级别用于颜色设置
+                user_msg, level = user_logger.translate_message(message)
+            else:
+                # 开发者模式，显示原始消息
+                formatted_message = f"[DEV] {message}"
+
+            final_message = f"[{timestamp}] {formatted_message}"
+
+            self.log_area.append(final_message)
+
+            # 保持原来的默认颜色，不进行颜色设置
+            # 这样用户体验与旧版一致
 
             # 滚动到底部
             self.log_area.moveCursor(QTextCursor.MoveOperation.End)
         else:
             if hasattr(self, 'log_area_early_messages'):
-                self.log_area_early_messages.append(message)
-            print(f"[日志]: {message}")
+                # 早期消息也进行用户友好转换
+                if use_user_friendly:
+                    formatted_msg = user_logger.format_user_message(message)
+                    self.log_area_early_messages.append(formatted_msg)
+                else:
+                    self.log_area_early_messages.append(message)
+
+            # 控制台输出
+            if use_user_friendly:
+                formatted_msg = user_logger.format_user_message(message)
+                print(f"[用户日志]: {formatted_msg}")
+            else:
+                print(f"[开发日志]: {message}")
+
+    def log_technical_message(self, message: str):
+        """
+        记录技术消息（开发者模式）
+
+        Args:
+            message: 技术消息
+        """
+        self.log_message(message, use_user_friendly=False)
+
+    def _apply_log_level_color(self, level: MessageLevel):
+        """
+        根据消息级别设置文本颜色
+        保持与旧版一致的颜色显示
+
+        Args:
+            level: 消息级别
+        """
+        # 注释掉颜色设置，保持原来的默认颜色
+        # 这样用户看到的日志颜色与原来一致
+        pass
 
     def handle_error(self, error: Exception, context: str = "", show_user_error: bool = True) -> None:
         """
@@ -1381,8 +1516,8 @@ class HealJimakuApp(QMainWindow):
         error_message = f"{error_info}: {str(error)}"
         traceback_str = traceback.format_exc()
 
-        # 记录到日志
-        self.log_message(f"❌ {error_message}")
+        # 记录到用户友好日志
+        self.log_message(f"错误: {str(error)}")
 
         # 记录详细错误到文件（如果配置目录存在）
         try:
@@ -1395,7 +1530,7 @@ class HealJimakuApp(QMainWindow):
                 f.write(f"错误类型: {type(error).__name__}\n")
                 f.write(f"详细堆栈:\n{traceback_str}\n")
         except Exception as log_error:
-            self.log_message(f"记录错误日志失败: {log_error}")
+            self.log_technical_message(f"记录错误日志失败: {log_error}")
 
         # 向用户显示友好的错误信息
         if show_user_error:
@@ -1452,6 +1587,7 @@ class HealJimakuApp(QMainWindow):
             USER_LLM_API_KEY_KEY: DEFAULT_LLM_API_KEY,
             USER_LLM_REMEMBER_API_KEY_KEY: DEFAULT_LLM_REMEMBER_API_KEY,
             USER_LLM_TEMPERATURE_KEY: DEFAULT_LLM_TEMPERATURE,
+            app_config.USER_ENABLE_AI_CORRECTION_KEY: app_config.DEFAULT_ENABLE_AI_CORRECTION,
             USER_ENABLE_RANDOM_BACKGROUND_KEY: DEFAULT_ENABLE_RANDOM_BACKGROUND,
             USER_CUSTOM_BACKGROUND_FOLDER_KEY: DEFAULT_CUSTOM_BACKGROUND_FOLDER,
         }
@@ -1522,6 +1658,24 @@ class HealJimakuApp(QMainWindow):
                 'num_speakers': self.config.get(USER_FREE_TRANSCRIPTION_NUM_SPEAKERS_KEY, DEFAULT_FREE_TRANSCRIPTION_NUM_SPEAKERS),
                 'tag_audio_events': self.config.get(USER_FREE_TRANSCRIPTION_TAG_AUDIO_EVENTS_KEY, DEFAULT_FREE_TRANSCRIPTION_TAG_AUDIO_EVENTS),
             }
+            # 初始化云端转录设置
+            self.cloud_transcription_settings = {
+                'provider': self.config.get('user_cloud_transcription_provider', DEFAULT_CLOUD_TRANSCRIPTION_PROVIDER),
+                'elevenlabs_api_key': self.config.get('user_elevenlabs_api_key', DEFAULT_ELEVENLABS_API_KEY),
+                'elevenlabs_api_remember_key': self.config.get('user_elevenlabs_api_remember_key', DEFAULT_ELEVENLABS_API_REMEMBER_KEY),
+                'elevenlabs_api_language': self.config.get('user_elevenlabs_api_language', DEFAULT_ELEVENLABS_API_LANGUAGE),
+                'elevenlabs_api_num_speakers': self.config.get('user_elevenlabs_api_num_speakers', DEFAULT_ELEVENLABS_API_NUM_SPEAKERS),
+                'elevenlabs_api_enable_diarization': self.config.get('user_elevenlabs_api_enable_diarization', DEFAULT_ELEVENLABS_API_ENABLE_DIARIZATION),
+                'elevenlabs_api_tag_audio_events': self.config.get('user_elevenlabs_api_tag_audio_events', DEFAULT_ELEVENLABS_API_TAG_AUDIO_EVENTS),
+                'soniox_api_key': self.config.get('user_soniox_api_key', DEFAULT_SONIOX_API_KEY),
+                'soniox_api_remember_key': self.config.get('user_soniox_api_remember_key', DEFAULT_SONIOX_API_REMEMBER_KEY),
+                'soniox_language_hints': self.config.get('user_soniox_language_hints', DEFAULT_SONIOX_LANGUAGE_HINTS),
+                'soniox_enable_speaker_diarization': self.config.get('user_soniox_enable_speaker_diarization', DEFAULT_SONIOX_ENABLE_SPEAKER_DIARIZATION),
+                'soniox_enable_language_identification': self.config.get('user_soniox_enable_language_identification', DEFAULT_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION),
+                'soniox_context_terms': self.config.get('user_soniox_context_terms', DEFAULT_SONIOX_CONTEXT_TERMS),
+                'soniox_context_text': self.config.get('user_soniox_context_text', DEFAULT_SONIOX_CONTEXT_TEXT),
+                'soniox_context_general': self.config.get('user_soniox_context_general', DEFAULT_SONIOX_CONTEXT_GENERAL),
+            }
             # 使用新的LLM配置系统获取当前配置
             current_profile = app_config.get_current_llm_profile(self.config)
             self.llm_advanced_settings = {
@@ -1558,7 +1712,11 @@ class HealJimakuApp(QMainWindow):
             if self.json_format_combo:
                 format_index = self.json_format_combo.findText(self.config.get('last_source_format', 'ElevenLabs(推荐)'))
                 self.json_format_combo.setCurrentIndex(format_index if format_index != -1 else 0)
-            
+
+            # AI错词校对设置默认不保存，每次启动都重置为默认值
+            if self.ai_correction_check:
+                self.ai_correction_check.setChecked(app_config.DEFAULT_ENABLE_AI_CORRECTION)
+
             if self.output_path_entry:
                 last_output = self.config.get('last_output_path', '')
                 if os.path.isdir(last_output):
@@ -1581,6 +1739,23 @@ class HealJimakuApp(QMainWindow):
             self.free_transcription_settings = {
                 'language': DEFAULT_FREE_TRANSCRIPTION_LANGUAGE, 'num_speakers': DEFAULT_FREE_TRANSCRIPTION_NUM_SPEAKERS,
                 'tag_audio_events': DEFAULT_FREE_TRANSCRIPTION_TAG_AUDIO_EVENTS,
+             }
+            self.cloud_transcription_settings = {
+                'provider': DEFAULT_CLOUD_TRANSCRIPTION_PROVIDER,
+                'elevenlabs_api_key': DEFAULT_ELEVENLABS_API_KEY,
+                'elevenlabs_api_remember_key': DEFAULT_ELEVENLABS_API_REMEMBER_KEY,
+                'elevenlabs_api_language': DEFAULT_ELEVENLABS_API_LANGUAGE,
+                'elevenlabs_api_num_speakers': DEFAULT_ELEVENLABS_API_NUM_SPEAKERS,
+                'elevenlabs_api_enable_diarization': DEFAULT_ELEVENLABS_API_ENABLE_DIARIZATION,
+                'elevenlabs_api_tag_audio_events': DEFAULT_ELEVENLABS_API_TAG_AUDIO_EVENTS,
+                'soniox_api_key': DEFAULT_SONIOX_API_KEY,
+                'soniox_api_remember_key': DEFAULT_SONIOX_API_REMEMBER_KEY,
+                'soniox_language_hints': DEFAULT_SONIOX_LANGUAGE_HINTS.copy(),
+                'soniox_enable_speaker_diarization': DEFAULT_SONIOX_ENABLE_SPEAKER_DIARIZATION,
+                'soniox_enable_language_identification': DEFAULT_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION,
+                'soniox_context_terms': DEFAULT_SONIOX_CONTEXT_TERMS,
+                'soniox_context_text': DEFAULT_SONIOX_CONTEXT_TEXT,
+                'soniox_context_general': DEFAULT_SONIOX_CONTEXT_GENERAL,
              }
             self.llm_advanced_settings = {
                 USER_LLM_API_BASE_URL_KEY: DEFAULT_LLM_API_BASE_URL, USER_LLM_MODEL_NAME_KEY: DEFAULT_LLM_MODEL_NAME,
@@ -1637,6 +1812,41 @@ class HealJimakuApp(QMainWindow):
             self.config[USER_BACKGROUND_SOURCE_KEY] = self.background_settings.get('background_source', DEFAULT_BACKGROUND_SOURCE)
             self.config[USER_REMEMBERED_CUSTOM_FOLDER_KEY] = self.background_settings.get('remembered_custom_folder', DEFAULT_REMEMBERED_CUSTOM_FOLDER)
             self.config[USER_REMEMBERED_CUSTOM_IMAGE_KEY] = self.background_settings.get('remembered_custom_image', DEFAULT_REMEMBERED_CUSTOM_IMAGE)
+
+  
+        # 保存云端转录配置
+        if hasattr(self, 'cloud_transcription_settings') and self.cloud_transcription_settings:
+            self.config[USER_CLOUD_TRANSCRIPTION_PROVIDER_KEY] = self.cloud_transcription_settings.get('provider', DEFAULT_CLOUD_TRANSCRIPTION_PROVIDER)
+
+            # [修复] 只有在记住状态时才保存API Key，否则保存空字符串以清除已保存的Key
+            el_remember = self.cloud_transcription_settings.get('elevenlabs_api_remember_key', False)
+            self.config[USER_ELEVENLABS_API_REMEMBER_KEY_KEY] = el_remember
+            if el_remember:
+                self.config[USER_ELEVENLABS_API_KEY_KEY] = self.cloud_transcription_settings.get('elevenlabs_api_key', '')
+            else:
+                # 如果未勾选记住，确保不保存API Key
+                self.config[USER_ELEVENLABS_API_KEY_KEY] = ''
+
+            self.config[USER_ELEVENLABS_API_LANGUAGE_KEY] = self.cloud_transcription_settings.get('elevenlabs_api_language', 'auto')
+            self.config[USER_ELEVENLABS_API_NUM_SPEAKERS_KEY] = self.cloud_transcription_settings.get('elevenlabs_api_num_speakers', 0)
+            self.config[USER_ELEVENLABS_API_ENABLE_DIARIZATION_KEY] = self.cloud_transcription_settings.get('elevenlabs_api_enable_diarization', True)
+            self.config[USER_ELEVENLABS_API_TAG_AUDIO_EVENTS_KEY] = self.cloud_transcription_settings.get('elevenlabs_api_tag_audio_events', True)
+
+            # [修复] 只有在记住状态时才保存Soniox API Key
+            sx_remember = self.cloud_transcription_settings.get('soniox_api_remember_key', False)
+            self.config[USER_SONIOX_API_REMEMBER_KEY_KEY] = sx_remember
+            if sx_remember:
+                self.config[USER_SONIOX_API_KEY_KEY] = self.cloud_transcription_settings.get('soniox_api_key', '')
+            else:
+                # 如果未勾选记住，确保不保存API Key
+                self.config[USER_SONIOX_API_KEY_KEY] = ''
+
+            self.config[USER_SONIOX_LANGUAGE_HINTS_KEY] = self.cloud_transcription_settings.get('soniox_language_hints', ['ja', 'zh', 'en'])
+            self.config[USER_SONIOX_ENABLE_SPEAKER_DIARIZATION_KEY] = self.cloud_transcription_settings.get('soniox_enable_speaker_diarization', True)
+            self.config[USER_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION_KEY] = self.cloud_transcription_settings.get('soniox_enable_language_identification', True)
+            self.config[USER_SONIOX_CONTEXT_TERMS_KEY] = self.cloud_transcription_settings.get('soniox_context_terms', '')
+            self.config[USER_SONIOX_CONTEXT_TEXT_KEY] = self.cloud_transcription_settings.get('soniox_context_text', '')
+            self.config[USER_SONIOX_CONTEXT_GENERAL_KEY] = self.cloud_transcription_settings.get('soniox_context_general', '')
         
         self.config[USER_LLM_API_BASE_URL_KEY] = self.llm_advanced_settings.get(USER_LLM_API_BASE_URL_KEY, DEFAULT_LLM_API_BASE_URL)
         self.config[USER_LLM_MODEL_NAME_KEY] = self.llm_advanced_settings.get(USER_LLM_MODEL_NAME_KEY, DEFAULT_LLM_MODEL_NAME)
@@ -1681,7 +1891,8 @@ class HealJimakuApp(QMainWindow):
     def browse_json_file(self):
         if not self.json_path_entry: return
         if self._current_input_mode != "local_json":
-            self.log_message("提示：当前为'免费获取JSON'模式，请通过对应对话框选择音频文件。")
+            mode_text = "免费转录" if self._current_input_mode == "free_transcription" else "云端转录"
+            self.log_message(f"提示：当前为'{mode_text}'模式，请通过对应对话框选择音频文件。")
             return
 
         # 优先使用配置中保存的路径
@@ -2163,8 +2374,9 @@ class HealJimakuApp(QMainWindow):
             self._open_free_transcription_dialog()
 
     def _cancel_free_transcription_mode(self):
-        """取消免费转录模式，恢复到本地JSON模式"""
-        self.log_message("用户取消免费转录模式，切换回本地JSON文件模式。")
+        """取消转录模式，恢复到本地JSON模式"""
+        mode_text = "免费转录" if self._current_input_mode == "free_transcription" else "云端转录"
+        self.log_message(f"用户取消{mode_text}模式，切换回本地JSON文件模式。")
         self._current_input_mode = "local_json"
 
         # 清除音频文件路径
@@ -2185,17 +2397,71 @@ class HealJimakuApp(QMainWindow):
         self.save_config()
 
     def _open_free_transcription_dialog(self):
-        """打开免费转录对话框（原来的open_free_transcription_dialog逻辑）"""
-        current_dialog_settings = self.free_transcription_settings.copy()
-        current_dialog_settings['audio_file_path'] = self._temp_audio_file_for_free_transcription or ""
-        
-        dialog = FreeTranscriptionDialog(current_dialog_settings, self)
-        dialog.settings_confirmed.connect(self.apply_free_transcription_settings)
-        
+        """打开云端转录对话框"""
+        dialog = CloudTranscriptionDialog(self)
+
+        # 如果有预设的音频文件，设置到对话框中
+        if self._temp_audio_file_for_free_transcription:
+            dialog.selected_audio_file_path = self._temp_audio_file_for_free_transcription
+            dialog.file_path_entry.setText(self._temp_audio_file_for_free_transcription)
+            dialog.update_file_display()
+
+        # 添加信号连接，确保用户的设置能够生效
+        dialog.settings_confirmed.connect(self.apply_cloud_transcription_settings)
+
         if dialog.exec() == QDialog.DialogCode.Accepted:
             pass
         else:
             self._cancel_free_transcription_mode()
+
+    def apply_cloud_transcription_settings(self, new_settings: dict):
+        """应用云端转录设置"""
+        self._current_input_mode = "cloud_transcription"
+        self._temp_audio_file_for_free_transcription = new_settings.get('audio_file_path')
+
+        # 保存云端转录设置
+        # [修复] 使用 update 而不是直接赋值，防止丢失其他服务商的 Key (例如 Soniox 的 Key)
+        if not hasattr(self, 'cloud_transcription_settings') or not self.cloud_transcription_settings:
+            self.cloud_transcription_settings = {}
+        self.cloud_transcription_settings.update(new_settings)
+
+        # 新增：处理批量音频文件
+        self._batch_audio_files = new_settings.get('audio_files', [])
+
+        if self.json_path_entry:
+            if self._batch_audio_files:
+                # 批量音频模式
+                self.json_path_entry.setText(f"已选择 {len(self._batch_audio_files)} 个音频文件")
+            elif self._temp_audio_file_for_free_transcription:
+                # 单个音频模式
+                provider_name = new_settings.get('provider', 'unknown').replace('_', ' ').title()
+                self.json_path_entry.setText(f"{provider_name}: {os.path.basename(self._temp_audio_file_for_free_transcription)}")
+
+        self._update_input_mode_ui()  # 这会更新按钮文本
+
+        # 根据云端设置更新JSON格式下拉框
+        if self.json_format_combo:
+            source_format = self._get_source_format_from_cloud_settings()
+            format_text_map = {
+                'elevenlabs': 'ElevenLabs(推荐)',
+                'elevenlabs_api': 'ElevenLabs(推荐)',
+                'soniox': 'Soniox(推荐)',
+                'whisper': 'Whisper(推荐)',
+                'deepgram': 'Deepgram',
+                'assemblyai': 'AssemblyAI'
+            }
+            format_text = format_text_map.get(source_format, 'ElevenLabs(推荐)')
+            format_index = self.json_format_combo.findText(format_text)
+            if format_index != -1:
+                self.json_format_combo.setCurrentIndex(format_index)
+
+        self.log_message(f"云端转录参数已更新: { {k:v for k,v in new_settings.items() if k not in ['audio_file_path', 'audio_files', 'api_key']} }")
+        if self._batch_audio_files:
+            self.log_message(f"  将批量处理 {len(self._batch_audio_files)} 个音频文件")
+        elif self._temp_audio_file_for_free_transcription:
+            provider_name = new_settings.get('provider', 'unknown').replace('_', ' ').title()
+            self.log_message(f"  将使用 {provider_name} 处理音频文件: {self._temp_audio_file_for_free_transcription}")
+        self.save_config()
 
     def apply_free_transcription_settings(self, new_settings: dict):
         self._current_input_mode = "free_transcription"
@@ -2231,6 +2497,16 @@ class HealJimakuApp(QMainWindow):
         """
         开始转换 - 使用ConversionController管理业务逻辑
         """
+        # 检查是否处于处理状态（作为停止按钮使用）
+        if getattr(self, "is_processing", False):
+            # 添加状态检查，确保控制器存在且可用
+            if not self.conversion_controller:
+                self.log_message("错误：正在处理状态但没有有效的控制器")
+                return
+
+            self.stop_conversion()
+            return
+
         if not (self.api_key_entry and self.output_path_entry and \
                 self.start_button and self.progress_bar and self.log_area and \
                 self.json_format_combo and self.json_path_entry):
@@ -2299,6 +2575,18 @@ class HealJimakuApp(QMainWindow):
         # 配置SRT处理器
         self.srt_processor.configure_from_main_config(self.config)
 
+        # [新增] 准备 SRT 参数字典
+        # 确保这是一个字典，包含了当前 UI 上设置的值
+        current_srt_params = self.advanced_srt_settings.copy()
+        # 如果为空（未打开过设置），则从 config 中读取默认值构建
+        if not current_srt_params:
+             current_srt_params = {
+                'min_duration_target': self.config.get(app_config.USER_MIN_DURATION_TARGET_KEY, app_config.DEFAULT_MIN_DURATION_TARGET),
+                'max_duration': self.config.get(app_config.USER_MAX_DURATION_KEY, app_config.DEFAULT_MAX_DURATION),
+                'max_chars_per_line': self.config.get(app_config.USER_MAX_CHARS_PER_LINE_KEY, app_config.DEFAULT_MAX_CHARS_PER_LINE),
+                'default_gap_ms': self.config.get(app_config.USER_DEFAULT_GAP_MS_KEY, app_config.DEFAULT_DEFAULT_GAP_MS),
+             }
+
         # 确保API Key已经正确同步到配置
         if current_ui_api_key:
             print(f"[DEBUG] 转换前同步API Key: {current_ui_api_key[:10]}...")
@@ -2319,45 +2607,90 @@ class HealJimakuApp(QMainWindow):
             }
 
         # 使用ConversionController处理任务
-        if self._current_input_mode == "free_transcription":
+        if self._current_input_mode in ["free_transcription", "cloud_transcription"]:
             # 检查是否有批量音频文件
             if self._batch_audio_files:
                 # 批量音频处理模式
                 self.log_message(f"检测到 {len(self._batch_audio_files)} 个音频文件，开始批量处理...")
+
+                # 根据 self._current_input_mode 动态设置参数
+                if self._current_input_mode == "free_transcription":
+                    mode = "free_transcription"
+                    source_format = "elevenlabs"  # 免费转录总是使用elevenlabs
+                    cloud_params = None
+                elif self._current_input_mode == "cloud_transcription":
+                    mode = "cloud_transcription"
+                    source_format = self._get_source_format_from_cloud_settings()
+                    cloud_params = self.cloud_transcription_settings
+                    free_transcription_params = None
+                else:
+                    # 默认回退到免费转录模式
+                    mode = "free_transcription"
+                    source_format = "elevenlabs"
+                    cloud_params = None
+
+                # 获取AI校正设置（批量云端转录模式也需要AI校正）
+                enable_ai_correction = self.ai_correction_check.isChecked() if self.ai_correction_check else False
+
                 self.conversion_controller.start_batch_task(
                     files=self._batch_audio_files,
                     output_dir=output_dir,
-                    mode="free_transcription",
+                    mode=mode,
                     free_params=free_transcription_params,
-                    source_format="elevenlabs"  # 批量音频总是使用elevenlabs
+                    source_format=source_format,
+                    cloud_params=cloud_params,
+                    enable_ai_correction=enable_ai_correction,
+                    srt_params=current_srt_params
                 )
             else:
                 # 单个音频文件模式
                 if not self._temp_audio_file_for_free_transcription or \
                    not os.path.isfile(self._temp_audio_file_for_free_transcription):
-                    QMessageBox.critical(self, "错误", "请在'免费获取'中选择一个有效的音频文件。")
+                    mode_text = "云端转录" if self._current_input_mode == "cloud_transcription" else "免费转录"
+                    QMessageBox.critical(self, "错误", f"请在'{mode_text}'中选择一个有效的音频文件。")
                     return
 
-                free_transcription_params["audio_file_path"] = self._temp_audio_file_for_free_transcription
-                self.conversion_controller.start_single_task(
-                    input_path="",  # 空字符串表示使用免费转录模式
-                    output_dir=output_dir,
-                    mode="free_transcription",
-                    free_params=free_transcription_params,
-                    source_format="elevenlabs"  # 免费转录总是使用elevenlabs
-                )
+                if self._current_input_mode == "free_transcription":
+                    free_transcription_params["audio_file_path"] = self._temp_audio_file_for_free_transcription
+                    self.conversion_controller.start_single_task(
+                        input_path="",  # 空字符串表示使用转录模式
+                        output_dir=output_dir,
+                        mode="free_transcription",
+                        free_params=free_transcription_params,
+                        source_format="elevenlabs",  # 免费转录总是使用elevenlabs
+                        srt_params=current_srt_params
+                    )
+                else:  # cloud_transcription
+                    # 获取AI校正设置（云端转录模式也需要AI校正）
+                    enable_ai_correction = self.ai_correction_check.isChecked() if self.ai_correction_check else False
+
+                    self.conversion_controller.start_single_task(
+                        input_path="",  # 空字符串表示使用转录模式
+                        output_dir=output_dir,
+                        mode="cloud_transcription",
+                        free_params=None,
+                        source_format=self._get_source_format_from_cloud_settings(),
+                        cloud_params=self.cloud_transcription_settings,
+                        enable_ai_correction=enable_ai_correction,
+                        srt_params=current_srt_params
+                    )
 
         elif self._current_input_mode == "local_json":
             # 检查是否有批量文件
             if self._batch_files:
                 # 批量处理模式
+                # 获取AI纠错设置（批量JSON模式也需要AI校正）
+                enable_ai_correction = self.ai_correction_check.isChecked() if self.ai_correction_check else False
+
                 self.log_message(f"检测到 {len(self._batch_files)} 个文件，开始批量处理...")
                 self.conversion_controller.start_batch_task(
                     files=self._batch_files,
                     output_dir=output_dir,
                     mode="local_json",
                     free_params=None,
-                    source_format=self._get_source_format_from_combo()
+                    source_format=self._get_source_format_from_combo(),
+                    enable_ai_correction=enable_ai_correction,
+                    srt_params=current_srt_params
                 )
             else:
                 # 单个文件模式
@@ -2367,15 +2700,73 @@ class HealJimakuApp(QMainWindow):
                 if not os.path.isfile(json_path):
                     QMessageBox.critical(self, "错误", f"JSON 文件不存在: {json_path}"); return
 
+                # 获取AI纠错设置
+                enable_ai_correction = self.ai_correction_check.isChecked() if self.ai_correction_check else False
+
                 self.conversion_controller.start_single_task(
                     input_path=json_path,
                     output_dir=output_dir,
                     mode="local_json",
                     free_params=None,
-                    source_format=self._get_source_format_from_combo()
+                    source_format=self._get_source_format_from_combo(),
+                    enable_ai_correction=enable_ai_correction,
+                    srt_params=current_srt_params
                 )
         else:
             QMessageBox.critical(self, "内部错误", "未知的输入模式。"); return
+
+    def stop_conversion(self):
+        """停止当前转换任务"""
+        # 状态检查：确保确实有正在运行的任务
+        if not getattr(self, "is_processing", False):
+            self.log_message("没有正在运行的任务")
+            return
+
+        if not self.conversion_controller:
+            self.log_message("错误：没有有效的转换控制器")
+            # 强制重置状态
+            self.is_processing = False
+            if self.start_button:
+                self.start_button.setEnabled(True)
+                self.start_button.setText("开始转换")
+                self.start_button.setStyleSheet(self._get_default_start_btn_style())
+            return
+
+        self.log_message("正在请求停止任务...")
+
+        # 防止重复点击，更新按钮状态
+        if self.start_button:
+            self.start_button.setEnabled(False)
+            self.start_button.setText("正在停止...")
+            self.start_button.setStyleSheet("""
+                QPushButton {
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 rgba(255, 158, 64, 180), stop:1 rgba(200, 100, 30, 200));
+                    color: white;
+                    border: 1px solid rgba(255, 158, 64, 150);
+                    border-radius: 8px;
+                    font-family: '楷体';
+                    font-size: 15pt;
+                    font-weight: bold;
+                }
+            """)
+
+        try:
+            self.conversion_controller.stop_task()
+            self.log_message("已发送停止信号，等待任务完成...")
+
+            # 【新增】立即重置进度条
+            if self.progress_bar:
+                self.progress_bar.setValue(0)
+
+        except Exception as e:
+            self.log_message(f"停止任务时发生错误: {e}")
+            # 出错时重置状态
+            self.is_processing = False
+            if self.start_button:
+                self.start_button.setEnabled(True)
+                self.start_button.setText("开始转换")
+                self.start_button.setStyleSheet(self._get_default_start_btn_style())
 
     def on_free_json_generated_by_worker(self, generated_json_path: str):
         self.log_message(f"Worker已生成JSON字幕: {generated_json_path}")
@@ -2385,9 +2776,92 @@ class HealJimakuApp(QMainWindow):
         """
         处理控制器任务开始信号
         """
-        if hasattr(self, 'start_button') and self.start_button:
-            self.start_button.setEnabled(False)
-            self.start_button.setText("停止处理")
+        try:
+            self.is_processing = True
+
+            # 锁定其他控件
+            self._set_all_controls_enabled(False)
+
+            # 特殊处理 Start 按钮：保持启用，但变身
+            if self.start_button:
+                try:
+                    self.start_button.setEnabled(True)
+                    self.start_button.setText("停止任务 ⏹")
+                    self.start_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #d9534f;
+                    color: white;
+                    border-radius: 5px;
+                    font-weight: bold;
+                    font-family: 'Microsoft YaHei';
+                    font-size: 14pt;
+                }
+                QPushButton:hover { background-color: #c9302c; }
+            """)
+                except Exception as e:
+                    self.log_message(f"设置停止按钮状态时出错: {e}")
+
+        except Exception as e:
+            self.log_message(f"处理任务开始信号时发生错误: {e}")
+            # 出错时强制重置状态
+            try:
+                self.is_processing = False
+                if self.start_button:
+                    self.start_button.setEnabled(True)
+                    self.start_button.setText("开始转换")
+                    self.start_button.setStyleSheet(self._get_default_start_btn_style())
+                self._set_all_controls_enabled(True)
+            except:
+                pass
+
+    def _set_all_controls_enabled(self, enabled: bool):
+        """
+        设置所有控件的可用状态
+
+        Args:
+            enabled: True为启用，False为禁用
+        """
+        # API Key相关控件
+        if hasattr(self, 'api_key_entry') and self.api_key_entry:
+            self.api_key_entry.setEnabled(enabled)
+        if hasattr(self, 'api_key_visibility_button') and self.api_key_visibility_button:
+            self.api_key_visibility_button.setEnabled(enabled)
+        if hasattr(self, 'test_connection_button') and self.test_connection_button:
+            self.test_connection_button.setEnabled(enabled)
+
+        # 文件选择控件
+        if hasattr(self, 'json_path_entry') and self.json_path_entry:
+            self.json_path_entry.setEnabled(enabled)
+        if hasattr(self, 'json_browse_button') and self.json_browse_button:
+            self.json_browse_button.setEnabled(enabled)
+        if hasattr(self, 'json_format_combo') and self.json_format_combo:
+            self.json_format_combo.setEnabled(enabled)
+
+        # AI校对复选框
+        if hasattr(self, 'ai_correction_check') and self.ai_correction_check:
+            self.ai_correction_check.setEnabled(enabled)
+
+        # 输出路径控件
+        if hasattr(self, 'output_path_entry') and self.output_path_entry:
+            self.output_path_entry.setEnabled(enabled)
+        if hasattr(self, 'output_browse_button') and self.output_browse_button:
+            self.output_browse_button.setEnabled(enabled)
+
+        # 其他按钮
+        if hasattr(self, 'settings_button') and self.settings_button:
+            self.settings_button.setEnabled(enabled)
+        if hasattr(self, 'free_transcription_button') and self.free_transcription_button:
+            # 如果不在取消模式，则禁用
+            if not self._free_transcription_button_is_in_cancel_mode:
+                self.free_transcription_button.setEnabled(enabled)
+        if hasattr(self, 'llm_advanced_settings_button') and self.llm_advanced_settings_button:
+            self.llm_advanced_settings_button.setEnabled(enabled)
+        if hasattr(self, 'background_settings_button') and self.background_settings_button:
+            self.background_settings_button.setEnabled(enabled)
+
+        # 记住API Key复选框
+        if hasattr(self, 'remember_api_key_checkbox') and self.remember_api_key_checkbox:
+            self.remember_api_key_checkbox.setEnabled(enabled)
 
     def _on_task_finished(self, msg: str, success: bool):
         """
@@ -2397,14 +2871,94 @@ class HealJimakuApp(QMainWindow):
             msg: 完成消息
             success: 是否成功
         """
-        if hasattr(self, 'start_button') and self.start_button:
-            self.start_button.setEnabled(True)
-            self.start_button.setText("开始转换")
+        try:
+            # 确保状态重置
+            if hasattr(self, 'is_processing'):
+                self.is_processing = False
 
-        if success:
-            self.show_message_box(self, "完成", msg, True)
-        else:
-            self.show_message_box(self, "错误", f"处理失败: {msg}", False)
+            # 恢复按钮
+            if hasattr(self, 'start_button') and self.start_button:
+                try:
+                    self.start_button.setEnabled(True)
+                    self.start_button.setText("开始转换")
+                    # 恢复默认样式
+                    self.start_button.setStyleSheet(self._get_default_start_btn_style())
+                except Exception as e:
+                    self.log_message(f"恢复按钮状态时出错: {e}")
+
+            # 解锁其他控件
+            try:
+                self._set_all_controls_enabled(True)
+            except Exception as e:
+                self.log_message(f"解锁控件时出错: {e}")
+
+            # 【新增】任务结束（无论成功失败），重置进度条
+            if self.progress_bar:
+                if success:
+                    self.progress_bar.setValue(100)  # 确保显示满格
+                    # 可选：延时 1 秒后归零，或者直接归零。这里按需求演示直接归零
+                    # QTimer.singleShot(1000, lambda: self.progress_bar.setValue(0))
+                    self.progress_bar.setValue(0)
+                else:
+                    self.progress_bar.setValue(0)
+
+            # 重置免费转录/云端转录按钮状态
+            if hasattr(self, 'free_transcription_button') and self.free_transcription_button:
+                try:
+                    self.free_transcription_button.setText("云端获取JSON")
+                    self.free_transcription_button.setProperty("cancelMode", False)
+                    self.free_transcription_button.style().unpolish(self.free_transcription_button)
+                    self.free_transcription_button.style().polish(self.free_transcription_button)
+                    self._free_transcription_button_is_in_cancel_mode = False
+                except Exception as e:
+                    self.log_message(f"重置转录按钮状态时出错: {e}")
+
+            # 根据不同的完成状态显示不同的消息
+            if success:
+                if "任务已提前停止" in msg:
+                    self.show_message_box(self, "任务已停止", msg, True)
+                else:
+                    self.show_message_box(self, "完成", msg, True)
+            else:
+                if "任务已提前停止" in msg:
+                    self.show_message_box(self, "任务已停止", msg, True)
+                else:
+                    self.show_message_box(self, "错误", f"处理失败: {msg}", False)
+
+        except Exception as e:
+            self.log_message(f"处理任务完成信号时发生严重错误: {e}")
+            # 出现严重错误时，强制重置UI状态
+            try:
+                if hasattr(self, 'is_processing'):
+                    self.is_processing = False
+                if hasattr(self, 'start_button') and self.start_button:
+                    self.start_button.setEnabled(True)
+                    self.start_button.setText("开始转换")
+                    self.start_button.setStyleSheet(self._get_default_start_btn_style())
+                if hasattr(self, '_set_all_controls_enabled'):
+                    self._set_all_controls_enabled(True)
+                self.log_message("已强制重置UI状态")
+            except Exception as reset_error:
+                self.log_message(f"强制重置UI状态也失败: {reset_error}")
+                QMessageBox.critical(self, "严重错误", f"程序遇到严重错误，建议重启应用: {e}")
+
+    def _get_default_start_btn_style(self):
+        """获取开始按钮的默认样式"""
+        return """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(64, 158, 255, 180), stop:1 rgba(30, 100, 200, 200));
+                color: white;
+                border: 1px solid rgba(64, 158, 255, 150);
+                border-radius: 8px;
+                font-family: '楷体';
+                font-size: 15pt;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: rgba(64, 158, 255, 220);
+            }
+        """
 
     def _clear_worker_references(self):
         self.log_message("清理旧的worker和线程引用...")
@@ -2932,40 +3486,35 @@ class HealJimakuApp(QMainWindow):
         self._open_media_drop_settings_dialog(valid_media_files)
 
     def _open_media_drop_settings_dialog(self, media_files):
-        """打开媒体文件拖拽时的JSON输出设置对话框"""
-        # 准备对话框设置
-        current_dialog_settings = self.free_transcription_settings.copy()
+        """打开媒体文件拖拽时的云端转录设置对话框"""
+        # 创建并显示云端转录对话框
+        dialog = CloudTranscriptionDialog(self)
 
-        # 根据文件数量设置音频文件
-        if len(media_files) == 1:
-            current_dialog_settings['audio_file_path'] = media_files[0]
-            current_dialog_settings['audio_files'] = []
-        else:
-            current_dialog_settings['audio_file_path'] = ""
-            current_dialog_settings['audio_files'] = media_files
-
-        # 创建并显示对话框
-        dialog = FreeTranscriptionDialog(current_dialog_settings, self)
-        dialog.settings_confirmed.connect(lambda settings: self._apply_media_drop_settings(settings, media_files))
-
-        # 预设置文件信息
+        # 预设文件信息
         if len(media_files) == 1:
             dialog.selected_audio_file_path = media_files[0]
-            dialog.audio_file_path_entry.setText(media_files[0])
-            # 单文件模式下启用语言和说话人数选择
-            dialog.language_combo.setEnabled(True)
-            dialog.num_speakers_combo.setEnabled(True)
+            dialog.file_path_entry.setText(media_files[0])
+            dialog.update_file_display()  # 更新文件显示
         else:
             dialog.selected_audio_files = media_files
             dialog.selected_audio_file_path = ""  # 清空单个文件路径
-            dialog.audio_file_path_entry.setText(f"已选择 {len(media_files)} 个音频文件")
-            # 批量文件模式下允许用户调整参数，不强制禁用选项
-            # 保持用户之前的选择或使用默认值
-            dialog.language_combo.setEnabled(True)
-            dialog.num_speakers_combo.setEnabled(True)
+            dialog.file_path_entry.setText(f"已选择 {len(media_files)} 个音频文件")
+            dialog.update_file_display()  # 更新文件显示
+
+        # 添加信号连接，确保用户的设置能够生效
+        dialog.settings_confirmed.connect(self.apply_cloud_transcription_settings)
+
+        # === 修改开始：强制置顶主窗口 ===
+        # 在显示对话框之前，强制激活主窗口，确保它浮在文件资源管理器之上
+        self.activateWindow()
+        self.raise_()
+        # 可选：处理一下积压的事件，确保窗口重绘完成
+        QApplication.processEvents()
+        # === 修改结束 ===
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            # 设置已确认，处理在 _apply_media_drop_settings 中进行
+            # 对话框已确认，云端转录逻辑会在对话框内部处理
+            # 不需要额外处理，因为新对话框会自动处理文件上传和转录流程
             pass
         else:
             # 用户取消设置，恢复到本地JSON模式
