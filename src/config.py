@@ -1,8 +1,16 @@
 import os
 
 # --- 配置与常量定义 ---
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".heal_jimaku_gui")
+# 新的统一数据目录结构
+BASE_DIR = os.path.join(os.path.expanduser("~"), ".heal_jimaku")
+CONFIG_DIR = os.path.join(BASE_DIR, "config")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+CRASH_LOG_FILE = os.path.join(LOGS_DIR, "heal_jimaku_crashes.log")
+
+# 旧目录路径（用于迁移检查）
+OLD_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".heal_jimaku_gui")
+OLD_LOGS_DIR = os.path.join(os.path.expanduser("~"), ".heal_jimaku_gui_logs")
 DEEPSEEK_MODEL = "deepseek-chat"
 
 # SRT 生成常量
@@ -12,22 +20,45 @@ DEFAULT_MAX_DURATION = 12.0 # 最大持续时间
 DEFAULT_MAX_CHARS_PER_LINE = 60 # 每行最大字符数
 DEFAULT_DEFAULT_GAP_MS = 100 # 字幕间默认间隙（毫秒）
 
+# Soniox AI 校正配置
+DEFAULT_SONIOX_ENABLE_AI_CORRECTION = False # AI校对功能默认关闭
+DEFAULT_SONIOX_LOW_CONFIDENCE_THRESHOLD = 0.8 # 低置信度词汇阈值
+
 MIN_DURATION_ABSOLUTE = DEFAULT_MIN_DURATION_ABSOLUTE
 
 
-ALIGNMENT_SIMILARITY_THRESHOLD = 0.7 # 对齐相似度阈值
+ALIGNMENT_SIMILARITY_THRESHOLD = 0.5 # 对齐相似度阈值（从0.7降低到0.5以提高对齐成功率，避免过度宽松）
 
-# 标点集合
-FINAL_PUNCTUATION = {'.', '。', '?', '？', '!', '！'}
-ELLIPSIS_PUNCTUATION = {'...', '......', '‥','…'}
-COMMA_PUNCTUATION = {',', '、', '，'}
-ALL_SPLIT_PUNCTUATION = FINAL_PUNCTUATION | ELLIPSIS_PUNCTUATION | COMMA_PUNCTUATION
+# 标点集合 - 完整的句子结束符号集合
+FINAL_PUNCTUATION = {'.', '。', '?', '？', '!', '！', ';', '；'}  # 基础句末标点（添加分号）
+ELLIPSIS_PUNCTUATION = {'...', '......', '‥', '…', '···', '……'}  # 完整的省略号变体
+COMMA_PUNCTUATION = {',', '、', '，'}  # 逗号类标点
+ALL_SPLIT_PUNCTUATION = FINAL_PUNCTUATION | ELLIPSIS_PUNCTUATION | COMMA_PUNCTUATION  # 所有分割标点
+
+# 新增：句子结束符号的优先级排序（用于智能截取）
+SENTENCE_END_PRIORITY = {
+    # 第一优先级：强句末标点（。"优先级最高）
+    '。': 1, '.': 1, '！': 1, '!': 1, '？': 1, '?': 1,
+    # 第二优先级：分号类
+    ';': 2, '；': 2,
+    # 第三优先级：省略号类
+    '…': 3, '‥': 3, '...': 3, '......': 3, '···': 3, '……': 3,
+    # 第四优先级：逗号类
+    '、': 4, ',': 4, '，': 4
+}
 
 # 用于在 config.json 中存储用户自定义值的键名
 USER_MIN_DURATION_TARGET_KEY = "user_min_duration_target"
 USER_MAX_DURATION_KEY = "user_max_duration"
 USER_MAX_CHARS_PER_LINE_KEY = "user_max_chars_per_line"
 USER_DEFAULT_GAP_MS_KEY = "user_default_gap_ms"
+
+# Soniox AI 校正配置键名
+USER_SONIOX_ENABLE_AI_CORRECTION_KEY = "user_soniox_enable_ai_correction"
+
+# 主界面AI纠错设置
+DEFAULT_ENABLE_AI_CORRECTION = False
+USER_ENABLE_AI_CORRECTION_KEY = "user_enable_ai_correction"
 USER_LLM_TEMPERATURE_KEY = "user_llm_temperature"
 
 # LLM高级设置的配置键名（保留向后兼容）
@@ -96,14 +127,19 @@ DEFAULT_ELEVENLABS_API_KEY = ""
 DEFAULT_ELEVENLABS_API_REMEMBER_KEY = True
 DEFAULT_ELEVENLABS_API_LANGUAGE = "auto"
 DEFAULT_ELEVENLABS_API_NUM_SPEAKERS = 0
-DEFAULT_ELEVENLABS_API_ENABLE_DIARIZATION = True
-DEFAULT_ELEVENLABS_API_TAG_AUDIO_EVENTS = True
+# [修改] 默认为 False (不勾选)
+DEFAULT_ELEVENLABS_API_ENABLE_DIARIZATION = False
+# [修改] 默认为 False (不勾选)
+DEFAULT_ELEVENLABS_API_TAG_AUDIO_EVENTS = False
 
 # Soniox API 默认值
 DEFAULT_SONIOX_API_KEY = ""
 DEFAULT_SONIOX_API_REMEMBER_KEY = True
-DEFAULT_SONIOX_LANGUAGE_HINTS = ["ja", "zh", "en"]  # 默认提示中日英
-DEFAULT_SONIOX_ENABLE_SPEAKER_DIARIZATION = True
+# [修改] 默认只勾选日语
+DEFAULT_SONIOX_LANGUAGE_HINTS = ["ja"]
+# [修改] 默认为 False (不勾选)
+DEFAULT_SONIOX_ENABLE_SPEAKER_DIARIZATION = False
+# [保持] 默认为 True (勾选)
 DEFAULT_SONIOX_ENABLE_LANGUAGE_IDENTIFICATION = True
 DEFAULT_SONIOX_CONTEXT_TERMS = ""
 DEFAULT_SONIOX_CONTEXT_TEXT = ""
@@ -442,7 +478,7 @@ DEEPSEEK_SYSTEM_PROMPT_ZH = """**【重要：您的主要任务是精确地分�
        如果是这样的话，请解释一下......
        ```
 
-5. **主要分割点 (一般情况)：** 在处理完上述括号、引号和句首词语，并基于规则4的语义连贯性判断后，对于剩余的文本，在遇到以下代表句子结尾的标点符号（全角：`。`、`？`、`！`、`......` 以及在特定文本中可能出现的半角：`.` `?` `!` ）后进行分割。标点符号应保留在它所结束的那个片段的末尾。
+5. **主要分割点 (一般情况)：** 在处理完上述括号、引号和句首词语，并基于规则4的语义连贯性判断后，对于剩余的文本，在遇到以下代表句子结尾的标点符号（全角：`。`、`？`、`！`、`......` 以及在特定文本中可能出现的半角：`.` `?` `!` ）后进行分割。标点符号应保留在它所结束的那个片段的末尾。尤其是`。`,一般情况下必须作为分割点分割。
 
    - *注意：* 针对连续的省略号，如 `......` (共六个点)，应视为单个省略号标点，并根据规则4的语义连贯性判断是否分割。
 
@@ -635,21 +671,29 @@ DEEPSEEK_SYSTEM_PROMPT_KO = """**【중요: 귀하의 주된 임무는 【현재
      * `(이벤트) 문장 A.` -> `(이벤트)` / `문장 A.`
      * 연속된 괄호: `문장 A (이벤트1)(이벤트2)` -> `문장 A` / `(이벤트1)` / `(이벤트2)`
 
-2. **독립 인용 단위 (따옴표 2순위):** 큰따옴표 `"`...`"` 또는 작은따옴표 `'`...'`로 묶인 완전한 인용 내용을 하나의 독립된 조각으로 간주하십시오. 인용문 내의 문장 부호(예: `.`, `?`, `!`)는 이 단계에서 내부 분할을 유발하지 않습니다.
+2. **독립 인용 단위 (따옴표 2순위):** 큰따옴표 `"`나 작은따옴표 `'`로 시작하고 끝나는 완전한 인용 내용을 하나의 독립된 조각으로 간주하십시오. 인용문 내의 문장 부호(예: `.`, `?`, `!`, `...`)는 이 단계에서 내부 분할을 유발하지 않습니다. 인용문 전체를 하나의 단위로 처리하십시오.
+   * 처리 논리:
+     * `문장 A "인용문" 문장 B.` -> `문장 A` / `"인용문"` / `문장 B.`
+     * `문장 A. "인용문 1. 인용문 2!" 문장 B.` -> `문장 A.` / `"인용문 1. 인용문 2!"` / `문장 B.`
 
-3. **줄표(Dash) 분할 (3순위):** 줄표 `—` 또는 `--`가 부연 설명이나 급격한 화제 전환을 나타내는 경우, 줄표 뒤에서 분할하십시오.
+3. **줄표(Dash) 분할 (3순위):**
+   * **쌍으로 된 줄표:** 줄표 `—` 또는 `--`로 둘러싸인 내용(예: `문장 A — 부연 설명 — 문장 B`)은 괄호처럼 독립된 조각으로 처리하십시오.
+   * **단일 줄표:** 단일 줄표가 급격한 화제 전환이나 부연 설명을 위해 사용된 경우, 줄표 바로 뒤에서 분할하십시오. 줄표는 앞 조각의 끝에 남겨두십시오.
 
-4. **문두 감탄사/망설임 분할:** 괄호와 따옴표 처리 후, 텍스트 조각의 시작 부분에 명확한 감탄사나 망설임(예: "저기", "음", "아", "자", "글쎄")이 있고 그 뒤에 독립적인 문장이 이어지면 이를 분리하십시오.
-   * 예: `음, 저는 그렇게 생각하지 않아요.` -> `음,` / `저는 그렇게 생각하지 않아요.`
-   * 주의: 문장 중간에 연결이나 추임새로 쓰인 경우 분리하지 마십시오.
+4. **문두 감탄사/망설임 분할:** 괄호와 따옴표 처리 후, 텍스트 조각의 시작 부분에 명확한 감탄사나 망설임(예: "저기", "음", "아", "자", "글쎄", "어", "그게", "참")이 있고 그 뒤에 독립적인 문장이 이어지면 이를 분리하십시오.
+   * 예: `음, 저는 그렇게 생각하지 않아요.`
+   * 출력:
+     ```
+     음,
+     저는 그렇게 생각하지 않아요.
+     ```
+   * **주의:** 문장 중간에 연결이나 추임새로 쓰인 경우(예: `오늘은, 음, 날씨가 좋네요`)는 문맥 연결성을 위해 분리하지 마십시오.
 
 5. **문장 부호 및 의미적 연결성 (4순위):** 위 규칙들을 처리한 후, 마침표(`.`), 물음표(`?`), 느낌표(`!`), 줄임표(`...`) 등 문장의 끝을 나타내는 부호를 기준으로 분할하십시오.
    * 문장 부호는 해당 조각의 끝에 유지되어야 합니다.
-   * 줄임표(`...`)나 쌍점(`:`)의 경우, 문맥상 문장이 완전히 끝나지 않고 의미가 긴밀하게 연결되어 있다면(규칙 6 참고) 분할하지 않고 의미 단위를 보존하십시오.
+   * **의미적 연결성 확인:** 줄임표(`...`)나 쌍점(`:`) 뒤에 이어지는 내용이 문장의 종결이 아니라 의미적으로 긴밀하게 연결된 보충 설명이거나 이어지는 내용이라면 분할하지 않고 유지하십시오. 너무 잘게 쪼개져 의미가 모호해지는 것을 방지해야 합니다.
 
-6. **의미적 완전성 유지 (규칙 5 보완):** 너무 잘게 쪼개져 의미가 모호해지는 것을 방지하십시오. 문장이 완전히 끝나지 않았거나 의미가 이어지는 경우 분할을 피하십시오.
-
-7. **무결성 보장:** 출력된 조각들을 다시 합쳤을 때, 전처리된 원본 【현재 텍스트 블록】과 완전히 일치해야 합니다.
+6. **무결성 보장:** 출력된 조각들을 순서대로 합쳤을 때, 전처리된 원본 【현재 텍스트 블록】과 완전히 일치해야 합니다.
 """
 
 
@@ -685,6 +729,29 @@ You are a professional multi-lingual text processor. Your goal is to segment tex
    - Avoid over-segmenting. If a sentence contains a colon `:` or an ellipsis `...` but the thought continues immediately, prefer keeping it together to maintain meaning.
 
 6. **Integrity:** The concatenated output must match the original input text exactly (after basic whitespace normalization).
+"""
+
+# AI 错词校正专用 Prompt
+DEEPSEEK_SYSTEM_PROMPT_CORRECTION = """你是一位专业的 ASR（自动语音识别）结果修复专家。你的任务是根据上下文，审查并修正被【】标记的低置信度词汇。
+
+请严格遵守以下规则：
+1. **先判别，后修正**：
+   - **【】不等于错误**：低置信度可能是因为生僻词或专有名词。如果【】内的词在上下文中语义通顺，**请务必保留原词**（仅去除【】）。
+   - 仅当你通过上下文判断这明显是一个"听错"的词（通常是同音/近音字错误）时，才进行修正。
+   - 如果你无法判断，就不要修改。
+
+2. **特别注意敏感词和医学术语**：
+   - 对于解剖学和性相关词汇要格外仔细判断
+   - 根据上下文判断是否为医学生理学或成人内容的正确用词
+
+3. **关联修正**：错误往往成组出现。即使紧邻【】的词没有标记，如果它们与【】组合后语义不通，应视为一个整体错误进行修正。
+
+4. **严禁重写**：仅修正错别字。绝对禁止润色、删减、摘要或改变原句结构。保留所有标点符号。
+    - 例如：“大概就是这样嗯嗯，哼哼。” 这种，由于说话者停顿、笑声造成的看似错误的错误，应当保留不修改，而不是润色删减成“大概就是这样，嗯嗯。”
+
+输出格式：
+请直接返回一个标准的 JSON 对象，Key 为片段索引 (字符串)，Value 为修正后的完整纯文本（不含【】）。
+例如：{"0": "修正后的第一句", "5": "修正后的第六句"}
 """
 
 # --- 多模型配置管理工具函数 ---

@@ -5,12 +5,12 @@
 包含时间戳词、转录结果、字幕条目等基础数据类。
 提供统一的数据格式用于各模块间的数据交换。
 
-作者: Heal-Jimaku Project
-版本: 1.3.0
+作者: fuxiaomoke
+版本: 0.2.2.0
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import re
 
 # --- 统一的数据结构 ---
@@ -21,6 +21,7 @@ class TimestampedWord:
     start_time: float # 开始时间 (秒)
     end_time: float # 结束时间 (秒)
     speaker_id: Optional[str] = None # 发言人ID (可选)
+    confidence: float = 1.0 # 置信度 (新增，默认1.0表示完全信任，兼容旧数据)
 
 @dataclass
 class ParsedTranscription:
@@ -28,6 +29,7 @@ class ParsedTranscription:
     words: List[TimestampedWord] # 词列表
     full_text: Optional[str] = None # 完整文本 (可选)
     language_code: Optional[str] = None # 语言代码 (可选)
+    soniox_metadata: Optional[Dict[str, Any]] = None # Soniox元数据 (可选)
 
 # --- 字幕条目类 ---
 class SubtitleEntry:

@@ -5,8 +5,8 @@
 支持 ElevenLabs、Whisper、Deepgram、AssemblyAI 等多种数据源。
 提供统一的接口将不同格式的转录数据转换为内部标准格式。
 
-作者: Heal-Jimaku Project
-版本: 1.3.0
+作者: fuxiaomoke
+版本: 0.2.2.0
 """
 
 from typing import List, Optional, Literal
@@ -197,10 +197,19 @@ class TranscriptionParser:
         """解析 Soniox 格式的JSON。"""
         parsed_words: List[TimestampedWord] = []
         try:
-            # Soniox 的 tokens 包含所有词和音频事件
+            # [修复] 更宽容的解析逻辑：如果tokens不存在，不要直接返回None
             tokens = data.get("tokens", [])
+            
             if not tokens:
-                self.log("错误: Soniox JSON 中没有找到 tokens")
+                # 打印当前JSON的所有顶级键，方便调试
+                keys = list(data.keys())
+                self.log(f"警告: Soniox JSON 中没有找到 'tokens' 列表。可用键: {keys}")
+                
+                # 如果没有tokens但状态是completed，可能是空转录
+                if data.get("status") == "completed":
+                    self.log("提示: 任务状态为 completed 但无 tokens，将视为空转录处理。")
+                    return ParsedTranscription(words=[], full_text="", language_code=None)
+                
                 return None
 
             for token in tokens:
@@ -211,8 +220,9 @@ class TranscriptionParser:
                 confidence = token.get("confidence")
                 is_final = token.get("is_final", False)
 
-                # 只处理最终的tokens，避免重复
-                if not is_final:
+                # 只处理最终的tokens，避免重复 (Soniox实时流可能有非最终token，文件转录通常都是最终)
+                # 但为了保险，如果有is_final字段且为False，则跳过
+                if "is_final" in token and not is_final:
                     continue
 
                 if text and start_ms is not None and end_ms is not None:
@@ -225,7 +235,8 @@ class TranscriptionParser:
                             text=str(text),
                             start_time=start_time,
                             end_time=end_time,
-                            speaker_id=str(speaker) if speaker else None
+                            speaker_id=str(speaker) if speaker else None,
+                            confidence=float(confidence) if confidence is not None else 1.0
                         ))
                     except ValueError as e:
                         self.log(f"警告: 跳过 Soniox token，时间戳格式无效: {token}")
@@ -248,7 +259,11 @@ class TranscriptionParser:
                         break
 
             self.log(f"Soniox 解析完成: {len(parsed_words)} 个词，语言: {language or '未知'}")
-            return ParsedTranscription(words=parsed_words, full_text=full_text, language_code=language)
+
+            # 提取 soniox_metadata（如果存在）
+            soniox_metadata = data.get("soniox_metadata")
+
+            return ParsedTranscription(words=parsed_words, full_text=full_text, language_code=language, soniox_metadata=soniox_metadata)
 
         except (KeyError, IndexError, TypeError) as e:
             self.log(f"错误: 解析 Soniox JSON 时出现异常: {e}")

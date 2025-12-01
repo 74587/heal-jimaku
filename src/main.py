@@ -7,6 +7,10 @@
 import sys
 import os
 
+# 确保能找到项目模块
+if os.path.dirname(__file__) not in sys.path:
+    sys.path.insert(0, os.path.dirname(__file__))
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import Qt, qInstallMessageHandler, QtMsgType
@@ -40,6 +44,20 @@ if __name__ == "__main__":
         qInstallMessageHandler(qt_message_handler)
 
         setup_faulthandler()
+
+        # 检查并执行数据迁移
+        try:
+            from utils.migration import check_legacy_data, migrate_legacy_data
+            if check_legacy_data():
+                print("检测到旧版本数据，正在迁移...")
+                success, message = migrate_legacy_data()
+                if success:
+                    print(f"数据迁移完成: {message}")
+                else:
+                    print(f"数据迁移失败: {message}")
+        except Exception as e:
+            print(f"数据迁移检查失败: {e}")
+
         app = QApplication(sys.argv)
     except Exception as e:
         print(f"[Error] 应用初始化失败: {e}")
