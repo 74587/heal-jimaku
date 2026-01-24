@@ -123,7 +123,11 @@
 3. **安装依赖**:
 
    ```bash
+   # 安装GUI程序依赖
    pip install -r requirements.txt
+   
+   # 如果需要使用命令行工具（tools目录），额外安装：
+   pip install -r requirements-tools.txt
    ```
 
    主要依赖包括：
@@ -134,6 +138,9 @@
    - `langdetect`
    - `gradio_client` (用于处理PDF文档OCR识别)
    - `python-docx` (用于处理Word文档)
+   
+   命令行工具额外依赖：
+   - `av` (PyAV - FFmpeg的Python绑定，用于视频音频提取，仅命令行工具需要)
 
 4. **运行应用**:
 

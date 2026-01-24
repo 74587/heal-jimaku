@@ -15,14 +15,20 @@
 ## 安装依赖
 
 ```bash
-# 安装所有依赖
+# 安装命令行工具所需的所有依赖（包括GUI程序的基础依赖）
+pip install -r requirements-tools.txt
+
+# 或者分步安装：
+# 1. 先安装基础依赖
 pip install -r requirements.txt
 
-# 或单独安装命令行工具所需的依赖
-pip install av requests mutagen langdetect
+# 2. 再安装命令行工具专用依赖
+pip install av
 ```
 
 **重要**: `av` 库是 FFmpeg 的 Python 绑定，用于视频音频处理。如果安装失败，请确保系统已安装 FFmpeg。
+
+**注意**: GUI程序（治幕.exe）**不需要**安装 `av` 库，该库仅用于命令行工具。
 
 ## 使用方法
 
