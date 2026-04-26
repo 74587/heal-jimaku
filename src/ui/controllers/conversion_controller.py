@@ -245,7 +245,9 @@ class ConversionController(QObject):
             # [FIX] 传递 API 格式，确保用户设置的格式生效
             "api_format": current_profile.get("api_format", app_config.API_FORMAT_AUTO),
             # [FIX] 传递自定义 Headers（如 Claude 的 anthropic-version）
-            "custom_headers": current_profile.get("custom_headers", {})
+            "custom_headers": current_profile.get("custom_headers", {}),
+            # 传递思考模式等级
+            "thinking_level": current_profile.get("thinking_level", 0)
         }
 
         self.thread = QThread()

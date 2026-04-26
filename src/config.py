@@ -11,7 +11,7 @@ CRASH_LOG_FILE = os.path.join(LOGS_DIR, "heal_jimaku_crashes.log")
 # 旧目录路径（用于迁移检查）
 OLD_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".heal_jimaku_gui")
 OLD_LOGS_DIR = os.path.join(os.path.expanduser("~"), ".heal_jimaku_gui_logs")
-DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
 
 # SRT 生成常量
 DEFAULT_MIN_DURATION_TARGET = 1.2 # 目标最小持续时间
@@ -80,6 +80,7 @@ PROFILE_TEMPERATURE_KEY = "temperature"
 PROFILE_IS_DEFAULT_KEY = "is_default"
 PROFILE_CUSTOM_HEADERS_KEY = "custom_headers"
 PROFILE_API_FORMAT_KEY = "api_format"
+PROFILE_THINKING_LEVEL_KEY = "thinking_level"
 
 # API格式枚举
 API_FORMAT_OPENAI = "openai"
@@ -224,6 +225,7 @@ DEFAULT_REMEMBERED_CUSTOM_IMAGE = ""
 
 # --- LLM 相关新增配置 ---
 DEFAULT_LLM_TEMPERATURE = 0.2 # LLM默认温度
+DEFAULT_THINKING_LEVEL = 0  # 思考模式默认关闭 (0=关闭, 1=高, 2=最大)
 
 # LLM高级设置的默认值
 DEFAULT_LLM_API_BASE_URL = "https://api.deepseek.com"
@@ -246,12 +248,13 @@ DEFAULT_LLM_PROFILES = {
             "name": "DeepSeek Chat",
             "provider": PROVIDER_DEEPSEEK,
             "api_base_url": "https://api.deepseek.com",
-            "model_name": "deepseek-chat",
+            "model_name": "deepseek-v4-flash",
             "api_key": "",
             "temperature": DEFAULT_LLM_TEMPERATURE,
             "is_default": True,
             "custom_headers": {},
-            "api_format": API_FORMAT_OPENAI
+            "api_format": API_FORMAT_OPENAI,
+            "thinking_level": 0
         },
         {
             "id": "openai_gpt4",
@@ -263,7 +266,8 @@ DEFAULT_LLM_PROFILES = {
             "temperature": DEFAULT_LLM_TEMPERATURE,
             "is_default": False,
             "custom_headers": {},
-            "api_format": API_FORMAT_OPENAI
+            "api_format": API_FORMAT_OPENAI,
+            "thinking_level": 0
         },
         {
             "id": "claude_sonnet",
@@ -277,7 +281,8 @@ DEFAULT_LLM_PROFILES = {
             "custom_headers": {
                 "anthropic-version": "2023-06-01"
             },
-            "api_format": API_FORMAT_CLAUDE
+            "api_format": API_FORMAT_CLAUDE,
+            "thinking_level": 0
         },
         {
             "id": "gemini_pro",
@@ -289,7 +294,8 @@ DEFAULT_LLM_PROFILES = {
             "temperature": DEFAULT_LLM_TEMPERATURE,
             "is_default": False,
             "custom_headers": {},
-            "api_format": API_FORMAT_GEMINI
+            "api_format": API_FORMAT_GEMINI,
+            "thinking_level": 0
         }
     ]
 }
@@ -795,7 +801,8 @@ def migrate_legacy_config_to_profiles(config: dict) -> dict:
         "temperature": old_temperature,
         "is_default": True,
         "custom_headers": {},
-        "api_format": API_FORMAT_AUTO  # 添加API格式，使用auto自动检测
+        "api_format": API_FORMAT_AUTO,  # 添加API格式，使用auto自动检测
+        "thinking_level": 0
     }
 
     # 设置新的配置结构
@@ -839,7 +846,8 @@ def get_current_llm_profile(config: dict) -> dict:
         "temperature": DEFAULT_LLM_TEMPERATURE,
         "is_default": True,
         "custom_headers": {},
-        "api_format": API_FORMAT_AUTO  # 使用auto自动检测，更灵活
+        "api_format": API_FORMAT_AUTO,  # 使用auto自动检测，更灵活
+        "thinking_level": 0
     }
 
 def update_current_llm_profile(config: dict, profile: dict) -> dict:

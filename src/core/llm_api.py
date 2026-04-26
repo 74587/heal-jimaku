@@ -64,6 +64,99 @@ def _is_reasoning_model(model_name: str) -> bool:
     
     return False
 
+
+# ── 思考模式 (Thinking Mode) 辅助函数 ──
+
+# thinking_level → budget_tokens 映射
+_THINKING_BUDGETS = {1: 8192, 2: 32768}
+
+# thinking_level → reasoning_effort 字符串映射
+_THINKING_EFFORT = {1: "high", 2: "max"}
+
+
+def _is_default_thinking_model(model_name: str) -> bool:
+    """
+    判断模型是否默认开启思考模式（需要显式关闭）。
+    目前仅 DeepSeek V4 系列和 deepseek-chat/deepseek-reasoner 默认开启。
+    不匹配 deepseek-v3 等旧模型。
+    """
+    if not model_name:
+        return False
+    m = model_name.lower()
+    return bool(re.match(r'^deepseek[-_]?(v4|chat|reasoner)', m))
+
+
+def _build_thinking_params(
+    model_name: str,
+    thinking_level: int,
+    api_format: str,
+    temperature: Optional[float],
+) -> tuple[dict, Optional[float], Optional[int]]:
+    """
+    根据模型名、思考等级、API格式，构建思考模式的额外参数。
+
+    Returns:
+        (extra_params, effective_temperature, max_tokens_override)
+        - extra_params: 需要合并到 payload 的字典
+        - effective_temperature: 替代原 temperature 的值（None 表示不传）
+        - max_tokens_override: 如果需要覆盖 max_tokens 则返回值，否则 None
+    """
+    model_lower = model_name.lower() if model_name else ""
+
+    # ── 关闭思考 ──
+    if thinking_level <= 0:
+        if _is_default_thinking_model(model_name):
+            # 仅对已知默认开启思考的模型显式禁用
+            return {"thinking": {"type": "disabled"}}, temperature, None
+        return {}, temperature, None
+
+    budget = _THINKING_BUDGETS.get(thinking_level, 8192)
+    effort = _THINKING_EFFORT.get(thinking_level, "high")
+
+    # ── Claude 原生 API ──
+    if api_format == app_config.API_FORMAT_CLAUDE:
+        return (
+            {"thinking": {"type": "enabled", "budget_tokens": budget}},
+            1.0,  # Claude 开启思考时 temperature 必须为 1
+            budget + 8192,  # max_tokens 必须 > budget_tokens
+        )
+
+    # ── Gemini 原生 API ──
+    if api_format == app_config.API_FORMAT_GEMINI:
+        return (
+            {"thinkingConfig": {"thinkingBudget": budget}},
+            None,  # 思考模式下不传 temperature
+            None,
+        )
+
+    # ── OpenAI 兼容格式：按模型名分发 ──
+    if "deepseek" in model_lower:
+        return (
+            {"thinking": {"type": "enabled"}, "reasoning_effort": effort},
+            None,
+            None,
+        )
+
+    if "qwen" in model_lower or "qwq" in model_lower:
+        return (
+            {"enable_thinking": True},
+            None,
+            None,
+        )
+
+    # 通用 fallback（OpenAI o系列、Grok 等认识 reasoning_effort）
+    return (
+        {"reasoning_effort": effort},
+        None,
+        None,
+    )
+
+
+def _extract_gemini_text(parts: list) -> str:
+    """从 Gemini 响应的 parts 中提取文本，过滤掉 thought parts。"""
+    text_parts = [p.get("text", "") for p in parts if not p.get("thought", False)]
+    return "".join(text_parts)
+
 def _parse_api_url_and_model(
     input_base_url_str: Optional[str],
     input_model_name: Optional[str],
@@ -454,7 +547,8 @@ def _get_summary(
     custom_model_name: Optional[str],
     custom_temperature: Optional[float],
     signals_forwarder: Optional[Any] = None,
-    api_format: Optional[str] = None  # 新增：API格式参数
+    api_format: Optional[str] = None,  # API格式参数
+    thinking_level: int = 0  # 思考模式等级
 ) -> Optional[str]:
     def _log_summary_api(message: str):
         _log_api_message(message, signals_forwarder, prefix="[LLM API - Summary]")
@@ -478,21 +572,29 @@ def _get_summary(
             effective_api_format = app_config.API_FORMAT_OPENAI
 
     # 根据检测后的有效格式构建请求
+    # 获取思考模式参数
+    thinking_params, effective_temp_after_thinking, max_tokens_override = _build_thinking_params(
+        effective_model, thinking_level, effective_api_format, effective_summary_temperature
+    )
+
     if effective_api_format == app_config.API_FORMAT_GEMINI:
         # Gemini API 使用不同的请求格式和认证方式
+        gen_config = {"maxOutputTokens": 8192}
+        if effective_temp_after_thinking is not None:
+            gen_config["temperature"] = effective_temp_after_thinking
+        # 注入 Gemini 思考参数
+        if "thinkingConfig" in thinking_params:
+            gen_config["thinkingConfig"] = thinking_params["thinkingConfig"]
         payload = {
             "contents": [{"parts": [{"text": f"系统提示：{system_prompt_summary}\n\n用户输入：{full_text}"}]}],
-            "generationConfig": {
-                "temperature": effective_summary_temperature,
-                "maxOutputTokens": 8192
-            }
+            "generationConfig": gen_config
         }
         # Gemini API 使用 URL 参数传递 API key
         response = requests.post(f"{target_url}?key={api_key}", json=payload, timeout=180)
     else:
         # 其他 API 使用 OpenAI 兼容格式（包括 Claude，因为摘要任务可以用 system prompt）
         payload = {"model": effective_model, "messages": [{"role": "system", "content": system_prompt_summary}, {"role": "user", "content": full_text}]}
-        
+
         # [FIX] Reasoning模型（GPT-5系列、o系列）需要特殊处理
         if _is_reasoning_model(effective_model):
             # 使用 max_completion_tokens 而不是 max_tokens
@@ -500,9 +602,15 @@ def _get_summary(
             # 不传 temperature，使用模型默认值
         else:
             # 传统模型使用 max_tokens 和自定义 temperature
-            payload["max_tokens"] = 8192
-            if custom_temperature is not None:
-                payload["temperature"] = effective_summary_temperature
+            max_tok = max_tokens_override if max_tokens_override else 8192
+            payload["max_tokens"] = max_tok
+            if effective_temp_after_thinking is not None:
+                payload["temperature"] = effective_temp_after_thinking
+
+        # 注入 OpenAI/Claude 兼容的思考参数（thinking, enable_thinking, reasoning_effort 等）
+        for k, v in thinking_params.items():
+            if k != "thinkingConfig":  # thinkingConfig 仅用于 Gemini
+                payload[k] = v
 
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
         response = requests.post(target_url, headers=headers, json=payload, timeout=180)
@@ -515,20 +623,19 @@ def _get_summary(
             choice = data["choices"][0]; content = choice.get("message", {}).get("content"); finish_reason = choice.get("finish_reason", "unknown")
         elif data.get("candidates") and isinstance(data["candidates"], list) and len(data["candidates"]) > 0 and \
              isinstance(data["candidates"][0], dict) and \
-             data["candidates"][0].get("content", {}).get("parts", [{}]) and \
+             data["candidates"][0].get("content", {}).get("parts") and \
              isinstance(data["candidates"][0].get("content").get("parts"), list) and \
-             len(data["candidates"][0].get("content").get("parts")) > 0 and \
-             isinstance(data["candidates"][0].get("content").get("parts")[0], dict) and \
-             data["candidates"][0].get("content").get("parts")[0].get("text") is not None:
-            content = data["candidates"][0].get("content").get("parts")[0].get("text"); finish_reason = data["candidates"][0].get("finishReason", "unknown")
+             len(data["candidates"][0].get("content").get("parts")) > 0:
+            parts = data["candidates"][0]["content"]["parts"]
+            content = _extract_gemini_text(parts); finish_reason = data["candidates"][0].get("finishReason", "unknown")
 
         if content is not None:
             _log_summary_api(f"摘要获取成功。完成原因: {finish_reason}")
-            if finish_reason == "MAX_TOKENS" or finish_reason == "length": 
+            if finish_reason == "MAX_TOKENS" or finish_reason == "length":
                 _log_summary_api(f"警告: 摘要输出可能因达到API的默认max_tokens限制而被截断。")
             return content.strip()
-        else: 
-            error_info = data.get('error', {}); 
+        else:
+            error_info = data.get('error', {});
             if not error_info and data.get("code") and data.get("message"): error_info = data
             error_msg = error_info.get('message', str(data))
             _log_summary_api(f"错误: LLM API 对摘要请求的响应中内容为空或格式不符。完成原因: {finish_reason}, 响应数据: {str(data)[:500]}")
@@ -544,7 +651,8 @@ def call_llm_api_for_segmentation(
     custom_api_base_url_str: Optional[str], custom_model_name: Optional[str],
     custom_temperature: Optional[float],
     signals_forwarder: Optional[Any] = None, target_language: Optional[str] = None,
-    api_format: Optional[str] = None  # 新增：API格式参数
+    api_format: Optional[str] = None,  # API格式参数
+    thinking_level: int = 0  # 思考模式等级
 ) -> Optional[List[str]]:
     def _log_main_api(message: str):
         _log_api_message(message, signals_forwarder, prefix="[LLM API - Main]")
@@ -623,7 +731,8 @@ def call_llm_api_for_segmentation(
             api_key, text_to_segment, system_prompt_summary_task,
             custom_api_base_url_str, custom_model_name, effective_temperature,
             signals_forwarder=signals_forwarder,
-            api_format=effective_api_format  # 传递检测后的有效格式
+            api_format=effective_api_format,  # 传递检测后的有效格式
+            thinking_level=thinking_level
         )
         if summary_text_optional: summary_text = summary_text_optional; _log_main_api("成功获取到摘要。")
         else: _log_main_api("未能获取到摘要，将不带摘要继续进行分割。")
@@ -643,26 +752,39 @@ def call_llm_api_for_segmentation(
         user_content_with_summary = f"【全文摘要】:\n{summary_text}\n\n【当前文本块】:\n{chunk}"
         if not summary_text: user_content_with_summary = f"【当前文本块】:\n{chunk}"
 
+        # 获取思考模式参数
+        thinking_params, effective_temp_after_thinking, max_tokens_override = _build_thinking_params(
+            effective_model, thinking_level, effective_api_format, effective_temperature
+        )
+
         # [FIX] 根据 API 格式构建请求 - 使用检测后的有效格式
         if effective_api_format == app_config.API_FORMAT_GEMINI:
             # Gemini API 使用不同的请求格式和认证方式
+            gen_config = {"maxOutputTokens": 8192}
+            if effective_temp_after_thinking is not None:
+                gen_config["temperature"] = effective_temp_after_thinking
+            # 注入 Gemini 思考参数
+            if "thinkingConfig" in thinking_params:
+                gen_config["thinkingConfig"] = thinking_params["thinkingConfig"]
             payload = {
                 "contents": [{"parts": [{"text": f"系统提示：{system_prompt_segmentation}\n\n用户输入：{user_content_with_summary}"}]}],
-                "generationConfig": {
-                    "temperature": effective_temperature,
-                    "maxOutputTokens": 8192
-                }
+                "generationConfig": gen_config
             }
             # Gemini API 使用 URL 参数传递 API key（即使是代理也要这样）
             response = requests.post(f"{target_url}?key={api_key}", json=payload, timeout=180)
         elif effective_api_format == app_config.API_FORMAT_CLAUDE:
             # Claude API 使用 /v1/messages 格式
+            max_tok = max_tokens_override if max_tokens_override else 8192
             payload = {
                 "model": effective_model,
-                "max_tokens": 8192,
+                "max_tokens": max_tok,
                 "messages": [{"role": "user", "content": f"系统提示：{system_prompt_segmentation}\n\n用户输入：{user_content_with_summary}"}]
             }
-            if custom_temperature is not None: payload["temperature"] = effective_temperature
+            if effective_temp_after_thinking is not None:
+                payload["temperature"] = effective_temp_after_thinking
+            # 注入 Claude 思考参数
+            for k, v in thinking_params.items():
+                payload[k] = v
 
             headers = {
                 "Content-Type": "application/json",
@@ -673,7 +795,7 @@ def call_llm_api_for_segmentation(
         else:
             # OpenAI 兼容格式 (默认格式，包括 AUTO 模式)
             payload = {"model": effective_model, "messages": [{"role": "system", "content": system_prompt_segmentation}, {"role": "user", "content": user_content_with_summary }]}
-            
+
             # [FIX] Reasoning模型（GPT-5系列、o系列）需要特殊处理
             if _is_reasoning_model(effective_model):
                 # 使用 max_completion_tokens 而不是 max_tokens
@@ -681,9 +803,15 @@ def call_llm_api_for_segmentation(
                 # 不传 temperature，使用模型默认值
             else:
                 # 传统模型使用 max_tokens 和自定义 temperature
-                payload["max_tokens"] = 8192
-                if custom_temperature is not None:
-                    payload["temperature"] = effective_temperature
+                max_tok = max_tokens_override if max_tokens_override else 8192
+                payload["max_tokens"] = max_tok
+                if effective_temp_after_thinking is not None:
+                    payload["temperature"] = effective_temp_after_thinking
+
+            # 注入 OpenAI 兼容的思考参数
+            for k, v in thinking_params.items():
+                if k != "thinkingConfig":
+                    payload[k] = v
 
             headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
             response = requests.post(target_url, headers=headers, json=payload, timeout=180)
@@ -698,12 +826,11 @@ def call_llm_api_for_segmentation(
                 choice = data["choices"][0]; content = choice.get("message", {}).get("content"); finish_reason = choice.get("finish_reason", "unknown")
             elif data.get("candidates") and isinstance(data["candidates"], list) and len(data["candidates"]) > 0 and \
                  isinstance(data["candidates"][0], dict) and \
-                 data["candidates"][0].get("content", {}).get("parts", [{}]) and \
+                 data["candidates"][0].get("content", {}).get("parts") and \
                  isinstance(data["candidates"][0].get("content").get("parts"), list) and \
-                 len(data["candidates"][0].get("content").get("parts")) > 0 and \
-                 isinstance(data["candidates"][0].get("content").get("parts")[0], dict) and \
-                 data["candidates"][0].get("content").get("parts")[0].get("text") is not None:
-                content = data["candidates"][0].get("content").get("parts")[0].get("text"); finish_reason = data["candidates"][0].get("finishReason", "unknown")
+                 len(data["candidates"][0].get("content").get("parts")) > 0:
+                parts = data["candidates"][0]["content"]["parts"]
+                content = _extract_gemini_text(parts); finish_reason = data["candidates"][0].get("finishReason", "unknown")
 
             if content is not None:
                 raw_segments = [seg.strip() for seg in content.split('\n') if seg.strip()]

@@ -138,7 +138,7 @@ class ModelFetchWorker(QObject):
                 models = ["gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
                 return models, "API调用失败，使用OpenAI默认模型列表"
             elif "api.deepseek.com" in self._api_base_url:
-                models = ["deepseek-chat", "deepseek-coder"]
+                models = ["deepseek-v4-flash", "deepseek-v4-pro"]
                 return models, "API调用失败，使用DeepSeek默认模型列表"
             else:
                 # 通用模型列表（适用于第三方代理）
@@ -147,7 +147,7 @@ class ModelFetchWorker(QObject):
                     "gpt-3.5-turbo", "gpt-3.5-turbo-16k",
                     "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022",
                     "gemini-1.5-pro", "gemini-1.5-flash",
-                    "deepseek-chat", "deepseek-coder"
+                    "deepseek-v4-flash", "deepseek-v4-pro"
                 ]
                 return models, "API调用失败，使用通用模型列表"
 
@@ -177,6 +177,8 @@ class LlmAdvancedSettingsDialog(QDialog):
         self.api_key_edit: Optional[QLineEdit] = None
         self.temperature_slider: Optional[QSlider] = None
         self.temperature_value_label: Optional[QLabel] = None
+        self.thinking_slider: Optional[QSlider] = None
+        self.thinking_value_label: Optional[QLabel] = None
 
         # 描边颜色设置 (与主窗口一致)
         self.target_main_color = QColor(92, 138, 111)
@@ -192,18 +194,18 @@ class LlmAdvancedSettingsDialog(QDialog):
             screen_geometry = screen.availableGeometry()
             screen_height = screen_geometry.height()
             
-            # 如果屏幕高度小于900px，使用较小尺寸并启用滚动
-            if screen_height < 900:
+            # 如果屏幕高度小于1000px，使用较小尺寸并启用滚动
+            if screen_height < 1000:
                 dialog_width = 820  # 从750增加到820，给滚动条留更多空间
-                dialog_height = min(600, int(screen_height * 0.85))  # 最多占屏幕85%
+                dialog_height = min(680, int(screen_height * 0.88))  # 最多占屏幕88%
                 self.use_scroll = True
             else:
                 dialog_width = 900  # 从850增加到900
-                dialog_height = 700
+                dialog_height = 780
                 self.use_scroll = False
         else:
             dialog_width = 900
-            dialog_height = 700
+            dialog_height = 780
             self.use_scroll = False
         
         self.setFixedSize(dialog_width, dialog_height)
@@ -407,7 +409,7 @@ class LlmAdvancedSettingsDialog(QDialog):
         """创建右侧配置编辑面板 - 优化布局和组件尺寸"""
         panel = QWidget()
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setSpacing(15)  # 恢复合理的间距
+        panel_layout.setSpacing(10)  # 压缩间距，为思考模式滑块腾出空间
 
         # 配置详情组 - 增大字体和组件尺寸
         config_group = QGroupBox("配置详情")
@@ -415,12 +417,12 @@ class LlmAdvancedSettingsDialog(QDialog):
         # 移除固定高度，让GroupBox根据内容自动调整高度
 
         config_form = QFormLayout(config_group)
-        config_form.setSpacing(15)  # 增加行间距
-        config_form.setVerticalSpacing(18)  # 调整垂直间距
+        config_form.setSpacing(12)  # 压缩行间距
+        config_form.setVerticalSpacing(14)  # 压缩垂直间距
         config_form.setLabelAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)  # 标签垂直居中并右对齐
 
         # 设置Form的边距，避免内容贴边
-        config_form.setContentsMargins(15, 20, 15, 20)  # 左,上,右,下
+        config_form.setContentsMargins(15, 15, 15, 15)  # 压缩上下边距
 
         # 配置名称 - 使用CustomLabel保持与主界面一致
         profile_name_label = CustomLabel("配置名称:")
@@ -546,7 +548,7 @@ class LlmAdvancedSettingsDialog(QDialog):
         self.temperature_slider.setValue(20)  # 默认0.2
         self.temperature_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.temperature_slider.setTickInterval(10)
-        self.temperature_slider.setMinimumHeight(40)
+        self.temperature_slider.setMinimumHeight(36)
 
         self.temperature_value_label = QLabel("0.2")
         self.temperature_value_label.setMinimumWidth(50)
@@ -555,40 +557,74 @@ class LlmAdvancedSettingsDialog(QDialog):
         self.temperature_value_label.setObjectName("temperatureValueLabel")
         self.temperature_value_label.setStyleSheet("""
             QLabel#temperatureValueLabel {
-                color: white !important;
+                color: white;
                 font-size: 13pt;
                 font-weight: bold;
                 background: transparent;
+            }
+            QLabel#temperatureValueLabel:disabled {
+                color: rgba(160, 160, 160, 120);
             }
         """)  # 设置为白色
         temp_layout.addWidget(self.temperature_slider, 4)
         temp_layout.addWidget(self.temperature_value_label, 1)
         temp_label = CustomLabel("温度:")
         temp_label.setFont(QFont('楷体', 14, QFont.Weight.Bold))
-        temp_label.setMinimumHeight(40)  # 设置与滑块相同的最小高度
+        temp_label.setMinimumHeight(36)  # 设置与滑块相同的最小高度
         temp_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)  # 确保标签垂直居中右对齐
         config_form.addRow(temp_label, temp_layout)
 
+        # 思考模式设置 - 三档滑块 (0=关闭, 1=高, 2=最大)
+        thinking_layout = QHBoxLayout()
+        thinking_layout.setSpacing(15)
+        self.thinking_slider = QSlider(Qt.Orientation.Horizontal)
+        self.thinking_slider.setRange(0, 2)
+        self.thinking_slider.setValue(0)  # 默认关闭
+        self.thinking_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.thinking_slider.setTickInterval(1)
+        self.thinking_slider.setMinimumHeight(36)
+
+        self.thinking_value_label = QLabel("关闭")
+        self.thinking_value_label.setMinimumWidth(50)
+        self.thinking_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thinking_value_label.setMinimumHeight(32)
+        self.thinking_value_label.setObjectName("thinkingValueLabel")
+        self.thinking_value_label.setStyleSheet("""
+            QLabel#thinkingValueLabel {
+                color: white !important;
+                font-size: 13pt;
+                font-weight: bold;
+                background: transparent;
+            }
+        """)
+        thinking_layout.addWidget(self.thinking_slider, 4)
+        thinking_layout.addWidget(self.thinking_value_label, 1)
+        thinking_label = CustomLabel("思考模式:")
+        thinking_label.setFont(QFont('楷体', 14, QFont.Weight.Bold))
+        thinking_label.setMinimumHeight(36)
+        thinking_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        config_form.addRow(thinking_label, thinking_layout)
+
         panel_layout.addWidget(config_group)
 
-        # 操作按钮组 - 设为默认和测试连接
+        # 操作按钮组 - 设为默认和测试连接（横向排列节省空间）
         action_group = QGroupBox("操作")
-        action_layout = QVBoxLayout(action_group)
-        action_layout.setSpacing(12)  # 增加间距，让布局更舒展
-        action_layout.setContentsMargins(15, 8, 15, 8)  # 调整边距，更紧凑
+        action_layout = QHBoxLayout(action_group)
+        action_layout.setSpacing(12)
+        action_layout.setContentsMargins(15, 8, 15, 8)
 
         # 设为默认按钮
-        set_default_button = QPushButton("将当前配置设为默认")
+        set_default_button = QPushButton("设为默认")
         set_default_button.setObjectName("setDefaultButton")
-        set_default_button.setMinimumHeight(42)  # 增加高度，与其它控件保持一致
+        set_default_button.setMinimumHeight(38)
         set_default_button.clicked.connect(self._set_default_profile)
         action_layout.addWidget(set_default_button)
 
         # 测试连接按钮
-        self.test_connection_button = QPushButton("测试当前配置连接")
+        self.test_connection_button = QPushButton("测试连接")
         self.test_connection_button.setObjectName("testConnectionButton")
         self.test_connection_button.clicked.connect(self._test_connection)
-        self.test_connection_button.setMinimumHeight(42)  # 增加高度，与其它控件保持一致
+        self.test_connection_button.setMinimumHeight(38)
         action_layout.addWidget(self.test_connection_button)
 
         panel_layout.addWidget(action_group)
@@ -817,6 +853,18 @@ class LlmAdvancedSettingsDialog(QDialog):
                 height: 12px;
                 border-radius: 6px;
             }}
+            QSlider::groove:horizontal:disabled {{
+                background: rgba(180, 180, 180, 60);
+                border: 1px solid rgba(140, 140, 140, 100);
+            }}
+            QSlider::handle:horizontal:disabled {{
+                background: rgba(160, 160, 160, 120);
+                border: 2px solid rgba(120, 120, 120, 100);
+            }}
+            QSlider::sub-page:horizontal:disabled {{
+                background: rgba(160, 160, 160, 80);
+                border: 1px solid rgba(140, 140, 140, 100);
+            }}
 
             QSpinBox, QDoubleSpinBox {{
                 background-color: rgba(255, 255, 255, 60);
@@ -990,6 +1038,9 @@ class LlmAdvancedSettingsDialog(QDialog):
         # 温度滑块变化
         self.temperature_slider.valueChanged.connect(self._on_temperature_changed)
 
+        # 思考模式滑块变化
+        self.thinking_slider.valueChanged.connect(self._on_thinking_changed)
+
         # API格式变化 - 更新悬浮提示
         self.api_format_combo.currentTextChanged.connect(self._update_api_url_tooltip)
 
@@ -1100,6 +1151,22 @@ class LlmAdvancedSettingsDialog(QDialog):
             self.temperature_slider.setValue(int(temperature * 100))
             self.temperature_value_label.setText(f"{temperature:.1f}")
 
+            # 加载思考模式
+            thinking_level = profile.get("thinking_level", 0)
+            self.thinking_slider.setValue(thinking_level)
+            thinking_labels = {0: "关闭", 1: "高", 2: "最大"}
+            self.thinking_value_label.setText(thinking_labels.get(thinking_level, "关闭"))
+
+            # 同步温度滑块的禁用状态
+            thinking_on = thinking_level > 0
+            self.temperature_slider.setEnabled(not thinking_on)
+            self.temperature_value_label.setEnabled(not thinking_on)
+            if thinking_on:
+                self.temperature_slider.setToolTip("思考模式下温度参数不生效")
+                self.temperature_value_label.setText("禁用")
+            else:
+                self.temperature_slider.setToolTip("")
+
             # 更新API地址的悬浮提示
             self._update_api_url_tooltip()
 
@@ -1173,6 +1240,22 @@ class LlmAdvancedSettingsDialog(QDialog):
         temperature = value / 100.0
         self.temperature_value_label.setText(f"{temperature:.1f}")
 
+    def _on_thinking_changed(self, value: int):
+        """处理思考模式滑块变化"""
+        labels = {0: "关闭", 1: "高", 2: "最大"}
+        self.thinking_value_label.setText(labels.get(value, "关闭"))
+
+        # 思考模式开启时禁用温度滑块（思考模式下温度参数不生效）
+        thinking_on = value > 0
+        self.temperature_slider.setEnabled(not thinking_on)
+        self.temperature_value_label.setEnabled(not thinking_on)
+        if thinking_on:
+            self.temperature_slider.setToolTip("思考模式下温度参数不生效")
+            self.temperature_value_label.setText("禁用")
+        else:
+            self.temperature_slider.setToolTip("")
+            self.temperature_value_label.setText(f"{self.temperature_slider.value() / 100.0:.1f}")
+
     def _add_profile(self):
         """添加新配置"""
         import uuid
@@ -1189,7 +1272,8 @@ class LlmAdvancedSettingsDialog(QDialog):
             "temperature": 0.2,
             "is_default": False,
             "custom_headers": {},
-            "api_format": config.API_FORMAT_AUTO  # 默认自动检测
+            "api_format": config.API_FORMAT_AUTO,  # 默认自动检测
+            "thinking_level": 0  # 默认关闭思考模式
         }
 
         # 使用config模块添加新配置
@@ -1272,7 +1356,8 @@ class LlmAdvancedSettingsDialog(QDialog):
                     "is_default": profile.get("is_default", False),
                     "custom_headers": profile.get("custom_headers", {}),
                     "available_models": profile.get("available_models", []),  # 保存模型列表
-                    "api_format": api_format  # 保存API格式
+                    "api_format": api_format,  # 保存API格式
+                    "thinking_level": self.thinking_slider.value()  # 保存思考模式等级
                 }
 
                 # 注意：不要在这里更新全局的CURRENT_PROFILE_ID_KEY
@@ -1436,12 +1521,12 @@ class LlmAdvancedSettingsDialog(QDialog):
             config.PROVIDER_DEEPSEEK: {
                 "name_prefix": "新的DeepSeek配置",
                 "api_base_url": "https://api.deepseek.com",
-                "model_name": "deepseek-chat",  # 默认选择第一个模型
+                "model_name": "deepseek-v4-flash",
                 "temperature": 0.2,
                 "api_format": config.API_FORMAT_OPENAI,
                 "default_models": [
-                    "deepseek-chat",
-                    "deepseek-reasoner"
+                    "deepseek-v4-flash",
+                    "deepseek-v4-pro"
                 ]
             }
         }
@@ -1463,7 +1548,8 @@ class LlmAdvancedSettingsDialog(QDialog):
                 "temperature": template["temperature"],
                 "available_models": template["default_models"],  # 使用模板中的默认模型列表
                 "custom_headers": {},
-                "api_format": template["api_format"]  # 新增API格式
+                "api_format": template["api_format"],  # 新增API格式
+                "thinking_level": 0  # 默认关闭思考模式
             }
 
             self.config = config.add_llm_profile(self.config, new_profile)

@@ -430,8 +430,12 @@ class ConversionWorker(QObject):
             import config as app_config
             llm_api_format = self.llm_config.get("api_format", app_config.API_FORMAT_AUTO)
 
+            # 获取思考模式等级
+            llm_thinking_level = self.llm_config.get("thinking_level", 0)
+            thinking_labels = {0: "关闭", 1: "高", 2: "最大"}
+
             # 调用LLM API进行文本分割
-            self.signals.log_message.emit(f"调用LLM API进行文本分割 (URL配置: '{llm_base_url_str}', 模型: '{llm_model_name}', 温度: {llm_temperature}, API格式: {llm_api_format})...")
+            self.signals.log_message.emit(f"调用LLM API进行文本分割 (URL配置: '{llm_base_url_str}', 模型: '{llm_model_name}', 温度: {llm_temperature}, API格式: {llm_api_format}, 思考模式: {thinking_labels.get(llm_thinking_level, '关闭')})...")
             llm_segments = call_llm_api_for_segmentation(
                 api_key=llm_api_key,
                 text_to_segment=text_to_segment,
@@ -440,7 +444,8 @@ class ConversionWorker(QObject):
                 custom_temperature=llm_temperature,
                 signals_forwarder=self.signals,
                 target_language=llm_target_language_for_api,
-                api_format=llm_api_format  # 传递API格式参数
+                api_format=llm_api_format,  # 传递API格式参数
+                thinking_level=llm_thinking_level  # 传递思考模式等级
             )
             if not self.is_running : self.signals.finished.emit("任务在LLM API调用期间被取消。", False); return
             if llm_segments is None: self.signals.finished.emit("LLM API 调用失败或返回空。", False); return
