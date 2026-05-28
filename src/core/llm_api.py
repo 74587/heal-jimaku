@@ -17,6 +17,7 @@ import time
 import re
 
 import config as app_config # 使用别名
+from core.model_limits import get_max_output_tokens
 
 from langdetect import detect
 
@@ -24,7 +25,7 @@ from langdetect import detect
 DEFAULT_SYSTEM_PROMPT_FOR_SEGMENTATION = app_config.DEEPSEEK_SYSTEM_PROMPT_EN
 DEFAULT_SYSTEM_PROMPT_FOR_SUMMARY = app_config.DEEPSEEK_SYSTEM_PROMPT_SUMMARY_EN
 
-# 文本分块处理的最大字符数
+# 文本分块处理的默认最大字符数（模型未知时的兜底值）
 MAX_CHARS_PER_CHUNK = 2800
 
 
@@ -577,9 +578,12 @@ def _get_summary(
         effective_model, thinking_level, effective_api_format, effective_summary_temperature
     )
 
+    # 摘要任务的 max_tokens（摘要输出较短，使用 8192 兜底即可）
+    summary_max_tokens = min(get_max_output_tokens(effective_model), 8192)
+
     if effective_api_format == app_config.API_FORMAT_GEMINI:
         # Gemini API 使用不同的请求格式和认证方式
-        gen_config = {"maxOutputTokens": 8192}
+        gen_config = {"maxOutputTokens": summary_max_tokens}
         if effective_temp_after_thinking is not None:
             gen_config["temperature"] = effective_temp_after_thinking
         # 注入 Gemini 思考参数
@@ -598,11 +602,11 @@ def _get_summary(
         # [FIX] Reasoning模型（GPT-5系列、o系列）需要特殊处理
         if _is_reasoning_model(effective_model):
             # 使用 max_completion_tokens 而不是 max_tokens
-            payload["max_completion_tokens"] = 8192
+            payload["max_completion_tokens"] = summary_max_tokens
             # 不传 temperature，使用模型默认值
         else:
             # 传统模型使用 max_tokens 和自定义 temperature
-            max_tok = max_tokens_override if max_tokens_override else 8192
+            max_tok = max_tokens_override if max_tokens_override else summary_max_tokens
             payload["max_tokens"] = max_tok
             if effective_temp_after_thinking is not None:
                 payload["temperature"] = effective_temp_after_thinking
@@ -774,10 +778,13 @@ def call_llm_api_for_segmentation(
             effective_model, thinking_level, effective_api_format, effective_temperature
         )
 
+        # 根据模型能力动态确定 max_tokens
+        model_max_tokens = get_max_output_tokens(effective_model)
+
         # [FIX] 根据 API 格式构建请求 - 使用检测后的有效格式
         if effective_api_format == app_config.API_FORMAT_GEMINI:
             # Gemini API 使用不同的请求格式和认证方式
-            gen_config = {"maxOutputTokens": 8192}
+            gen_config = {"maxOutputTokens": model_max_tokens}
             if effective_temp_after_thinking is not None:
                 gen_config["temperature"] = effective_temp_after_thinking
             # 注入 Gemini 思考参数
@@ -791,7 +798,7 @@ def call_llm_api_for_segmentation(
             response = requests.post(f"{target_url}?key={api_key}", json=payload, timeout=180)
         elif effective_api_format == app_config.API_FORMAT_CLAUDE:
             # Claude API 使用 /v1/messages 格式
-            max_tok = max_tokens_override if max_tokens_override else 8192
+            max_tok = max_tokens_override if max_tokens_override else model_max_tokens
             payload = {
                 "model": effective_model,
                 "max_tokens": max_tok,
@@ -816,11 +823,11 @@ def call_llm_api_for_segmentation(
             # [FIX] Reasoning模型（GPT-5系列、o系列）需要特殊处理
             if _is_reasoning_model(effective_model):
                 # 使用 max_completion_tokens 而不是 max_tokens
-                payload["max_completion_tokens"] = 8192
+                payload["max_completion_tokens"] = model_max_tokens
                 # 不传 temperature，使用模型默认值
             else:
                 # 传统模型使用 max_tokens 和自定义 temperature
-                max_tok = max_tokens_override if max_tokens_override else 8192
+                max_tok = max_tokens_override if max_tokens_override else model_max_tokens
                 payload["max_tokens"] = max_tok
                 if effective_temp_after_thinking is not None:
                     payload["temperature"] = effective_temp_after_thinking
