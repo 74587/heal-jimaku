@@ -1,5 +1,6 @@
 ﻿PyQt6
 requests
+requests-toolbelt
 mutagen
 gradio_client #用于处理PDF文档
 langdetect #验证检测语言

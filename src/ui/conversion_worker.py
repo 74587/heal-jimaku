@@ -26,6 +26,7 @@ class WorkerSignals(QObject):
     progress = pyqtSignal(int)
     log_message = pyqtSignal(str)
     free_transcription_json_generated = pyqtSignal(str)
+    upload_progress = pyqtSignal(int, int)  # (bytes_read, total_bytes)
 
 
 class ConversionWorker(QObject):
@@ -106,6 +107,9 @@ class ConversionWorker(QObject):
     def run(self):
         """执行主转换流程，处理音频转录、JSON解析、LLM分割和SRT生成"""
         try:
+            # 设置上传进度回调
+            self.elevenlabs_stt_client._upload_progress_callback = lambda read, total: self.signals.upload_progress.emit(read, total)
+
             generated_json_path = self.input_json_path
             actual_source_format = self.source_format
             current_overall_progress = 0
@@ -434,6 +438,12 @@ class ConversionWorker(QObject):
             llm_thinking_level = self.llm_config.get("thinking_level", 0)
             thinking_labels = {0: "关闭", 1: "高", 2: "最大"}
 
+            # 检测多说话人
+            speakers = {w.speaker_id for w in parsed_transcription_data.words if w.speaker_id is not None}
+            is_multi_speaker = len(speakers) > 1
+            if is_multi_speaker:
+                self.signals.log_message.emit(f"检测到 {len(speakers)} 个不同的说话人，将注入多说话人提示到LLM分割")
+
             # 调用LLM API进行文本分割
             self.signals.log_message.emit(f"调用LLM API进行文本分割 (URL配置: '{llm_base_url_str}', 模型: '{llm_model_name}', 温度: {llm_temperature}, API格式: {llm_api_format}, 思考模式: {thinking_labels.get(llm_thinking_level, '关闭')})...")
             llm_segments = call_llm_api_for_segmentation(
@@ -445,7 +455,8 @@ class ConversionWorker(QObject):
                 signals_forwarder=self.signals,
                 target_language=llm_target_language_for_api,
                 api_format=llm_api_format,  # 传递API格式参数
-                thinking_level=llm_thinking_level  # 传递思考模式等级
+                thinking_level=llm_thinking_level,  # 传递思考模式等级
+                is_multi_speaker=is_multi_speaker  # 传递多说话人标记
             )
             if not self.is_running : self.signals.finished.emit("任务在LLM API调用期间被取消。", False); return
             if llm_segments is None: self.signals.finished.emit("LLM API 调用失败或返回空。", False); return

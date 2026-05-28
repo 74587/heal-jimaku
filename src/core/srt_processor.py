@@ -12,9 +12,15 @@ SRT字幕处理器模块
 import re
 import difflib
 import json
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Tuple
 from .data_models import TimestampedWord, ParsedTranscription, SubtitleEntry
 import config as app_config # 使用别名以减少潜在冲突并清晰化来源
+
+# ElevenLabs 重叠语音检测阈值（时间戳坍缩判定）
+# ElevenLabs 在处理同时说话时会将重叠部分的词序列化，时间戳坍缩到同一点 (start == end)
+COLLAPSED_MIN_WORDS_SPEAKER_CHANGE = 5  # speaker_id 变化时的最少坍缩词数
+COLLAPSED_MIN_WORDS_SAME_SPEAKER = 8    # speaker_id 未变化时的最少坍缩词数（更保守）
+DIALOGUE_MAX_DURATION = 16.0  # 对白条目绝对上限（秒），独立于用户设置的 max_duration
 
 class SrtProcessor:
     """
@@ -947,8 +953,228 @@ class SrtProcessor:
         char_count = len(re.sub(r'\s+', '', text))
         return char_count / duration
 
+    # -----------------------------------------------------------------------
+    # 对话检测与合并（ElevenLabs Mode B 专用）
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _trim_entry_to_last_sentence(entry: SubtitleEntry) -> Tuple[Optional[SubtitleEntry], SubtitleEntry]:
+        """
+        将 entry 按高级分隔符（。？！.?!）切分，保留最后一句用于对白，前面切出去。
+        Returns: (prefix_entry 或 None, tail_entry)
+        """
+        HIGH_LEVEL_PUNCTS = set("。？！.?!")
+        words = entry.words_used or []
+        if not words:
+            return None, entry
+
+        # 从后向前找到最后一个分隔符位置（不含最末尾）
+        last_punct_idx = -1
+        for i in range(len(words) - 2, -1, -1):
+            if any(c in HIGH_LEVEL_PUNCTS for c in words[i].text):
+                last_punct_idx = i
+                break
+
+        if last_punct_idx < 0:
+            return None, entry
+
+        prefix_words = words[:last_punct_idx + 1]
+        tail_words = words[last_punct_idx + 1:]
+        if not tail_words:
+            return None, entry
+
+        prefix_text = "".join(w.text for w in prefix_words).strip()
+        tail_text = "".join(w.text for w in tail_words).strip()
+        if not prefix_text or not tail_text:
+            return None, entry
+
+        prefix_entry = SubtitleEntry(
+            0, prefix_words[0].start_time, prefix_words[-1].end_time,
+            prefix_text, prefix_words, entry.alignment_ratio
+        )
+        tail_entry = SubtitleEntry(
+            0, tail_words[0].start_time, tail_words[-1].end_time,
+            tail_text, tail_words, entry.alignment_ratio
+        )
+        return prefix_entry, tail_entry
+
+    @staticmethod
+    def _trim_entry_to_first_sentence(entry: SubtitleEntry) -> Tuple[SubtitleEntry, Optional[SubtitleEntry]]:
+        """
+        将 entry 按高级分隔符切分，保留第一句用于对白，后面切出去。
+        Returns: (head_entry, suffix_entry 或 None)
+        """
+        HIGH_LEVEL_PUNCTS = set("。？！.?!")
+        words = entry.words_used or []
+        if not words:
+            return entry, None
+
+        # 从前向后找到第一个分隔符位置
+        first_punct_idx = -1
+        for i in range(len(words)):
+            if any(c in HIGH_LEVEL_PUNCTS for c in words[i].text):
+                first_punct_idx = i
+                break
+
+        if first_punct_idx < 0 or first_punct_idx >= len(words) - 1:
+            return entry, None
+
+        head_words = words[:first_punct_idx + 1]
+        suffix_words = words[first_punct_idx + 1:]
+        if not suffix_words:
+            return entry, None
+
+        head_text = "".join(w.text for w in head_words).strip()
+        suffix_text = "".join(w.text for w in suffix_words).strip()
+        if not head_text or not suffix_text:
+            return entry, None
+
+        head_entry = SubtitleEntry(
+            0, head_words[0].start_time, head_words[-1].end_time,
+            head_text, head_words, entry.alignment_ratio
+        )
+        suffix_entry = SubtitleEntry(
+            0, suffix_words[0].start_time, suffix_words[-1].end_time,
+            suffix_text, suffix_words, entry.alignment_ratio
+        )
+        return head_entry, suffix_entry
+
+    def _detect_and_merge_dialogue(
+        self,
+        entries: List[SubtitleEntry],
+        words: List[TimestampedWord],
+    ) -> List[SubtitleEntry]:
+        """
+        检测 ElevenLabs 时间戳坍缩（同时说话的特征），将对应字幕合并为对白格式。
+
+        ElevenLabs 处理同时说话时，会将重叠部分的词序列化到后面，
+        并将时间戳全部坍缩到同一点（start == end）。
+        通过检测这种坍缩模式来识别真正的语音重叠。
+
+        仅用于 Mode B（ElevenLabs）。
+
+        Args:
+            entries: Phase 1 对齐后的字幕条目列表
+            words: 原始 ASR 词列表（含 speaker_id）
+
+        Returns:
+            处理后的字幕条目列表（重叠处已合并为对白）
+        """
+        # 过滤出实质词（排除 spacing 等）
+        real_words = [w for w in words if w.text.strip()]
+        if len(real_words) < COLLAPSED_MIN_WORDS_SPEAKER_CHANGE:
+            return entries
+
+        # 扫描词流，寻找坍缩段的起始边界
+        overlap_times: List[float] = []
+        i_w = 0
+        while i_w < len(real_words):
+            is_collapsed = abs(real_words[i_w].end_time - real_words[i_w].start_time) < 0.01
+
+            if is_collapsed:
+                collapsed_start = i_w
+                while i_w < len(real_words) and abs(real_words[i_w].end_time - real_words[i_w].start_time) < 0.01:
+                    i_w += 1
+                collapsed_len = i_w - collapsed_start
+
+                # 根据 speaker_id 变化选择不同门槛
+                prev_speaker = real_words[collapsed_start - 1].speaker_id if collapsed_start > 0 else None
+                curr_speaker = real_words[collapsed_start].speaker_id
+                speaker_changed = (
+                    prev_speaker is not None
+                    and curr_speaker is not None
+                    and prev_speaker != curr_speaker
+                )
+                min_words = COLLAPSED_MIN_WORDS_SPEAKER_CHANGE if speaker_changed else COLLAPSED_MIN_WORDS_SAME_SPEAKER
+
+                if collapsed_len >= min_words:
+                    if collapsed_start > 0:
+                        overlap_times.append(real_words[collapsed_start - 1].end_time)
+                    else:
+                        overlap_times.append(real_words[collapsed_start].start_time)
+            else:
+                i_w += 1
+
+        if not overlap_times:
+            return entries
+
+        self.log(f"检测到 {len(overlap_times)} 个说话人重叠区域")
+
+        # 对每个重叠时间，找到对应的相邻条目对
+        merge_pairs: set = set()
+        for ot in overlap_times:
+            for i in range(len(entries) - 1):
+                if i in merge_pairs:
+                    continue
+                entry_a = entries[i]
+                entry_b = entries[i + 1]
+                if not entry_a.words_used or not entry_b.words_used:
+                    continue
+                a_end = entry_a.words_used[-1].end_time
+                b_start = entry_b.words_used[0].start_time
+                b_end = entry_b.words_used[-1].end_time
+                # 匹配条件：overlap_time 在 entry_a 末尾附近，或落在 entry_b 时间范围内
+                if abs(a_end - ot) < 0.5 or (b_start <= ot <= b_end):
+                    merge_pairs.add(i)
+                    break
+
+        if not merge_pairs:
+            return entries
+
+        # 执行合并
+        result: List[SubtitleEntry] = []
+        skip_next = False
+
+        for i, entry in enumerate(entries):
+            if skip_next:
+                skip_next = False
+                continue
+
+            if i in merge_pairs and i + 1 < len(entries):
+                entry_a = entries[i]
+                entry_b = entries[i + 1]
+
+                # entry_A：保留最后一句用于对白
+                prefix, dialogue_a = self._trim_entry_to_last_sentence(entry_a)
+                if prefix:
+                    result.append(prefix)
+                    self.log(f"对白前切分: \"{prefix.text[:25]}\" | \"{dialogue_a.text[:25]}\"")
+
+                # entry_B：保留第一句用于对白
+                dialogue_b, suffix = self._trim_entry_to_first_sentence(entry_b)
+                if suffix:
+                    self.log(f"对白后切分: \"{dialogue_b.text[:25]}\" | \"{suffix.text[:25]}\"")
+
+                # 合并对白
+                dialogue_text = f"-{dialogue_a.text}\n-{dialogue_b.text}"
+                merged_words = (dialogue_a.words_used or []) + (dialogue_b.words_used or [])
+                merged_entry = SubtitleEntry(
+                    0,
+                    min(dialogue_a.start_time, dialogue_b.start_time),
+                    max(dialogue_a.end_time, dialogue_b.end_time),
+                    dialogue_text, merged_words,
+                    min(dialogue_a.alignment_ratio, dialogue_b.alignment_ratio),
+                )
+                merged_entry.is_dialogue = True
+                result.append(merged_entry)
+                self.log(f"对白合并: \"{dialogue_a.text[:20]}\" + \"{dialogue_b.text[:20]}\"")
+
+                if suffix:
+                    result.append(suffix)
+
+                skip_next = True
+            else:
+                result.append(entry)
+
+        self.log(f"对白处理后: {len(result)} 条（合并 {len(merge_pairs)} 对）")
+        return result
+
     def _can_merge_entries(self, entry1: SubtitleEntry, entry2: SubtitleEntry) -> tuple[bool, str]:
         """检查两个条目是否可以合并"""
+        # 0. 对白条目不合并
+        if entry1.is_dialogue or entry2.is_dialogue:
+            return False, "对白条目不合并"
+
         # 1. 检查音频事件 (Audio Events)
         # 任何包含音频事件的条目都不应合并
         is_evt1 = self._is_bracketed_content(entry1.text) or (self._is_audio_event_words(entry1.words_used) if entry1.words_used else False)
@@ -1103,6 +1329,15 @@ class SrtProcessor:
 
             # 跳过括号内容
             if self._is_bracketed_content(entry.text):
+                optimized_entries.append(entry)
+                continue
+
+            # 对白条目：只做时间修正，不拆分
+            if entry.is_dialogue:
+                corrected_end = self._apply_end_time_correction(
+                    entry.words_used, entry.end_time, entry.start_time
+                )
+                entry.end_time = corrected_end
                 optimized_entries.append(entry)
                 continue
 
@@ -3601,7 +3836,14 @@ class SrtProcessor:
             self.log("----------------------------------------\\n")
         if not intermediate_entries: self.log("错误：对齐后没有生成任何有效的字幕条目。"); return None
         intermediate_entries.sort(key=lambda e: e.start_time)
-        
+
+        # --- Phase 1.5: 对话检测（仅 Mode B，ElevenLabs 重叠语音） ---
+        if processing_mode == "B":
+            self.log("Mode B: 检测说话人重叠对白...")
+            intermediate_entries = self._detect_and_merge_dialogue(
+                intermediate_entries, all_parsed_words
+            )
+
         # --- Phase 2: 智能合并 (模式特定) ---
         self.log(f"SRT阶段2: 合并调整字幕条目 (Mode {processing_mode})...")
 
@@ -3777,8 +4019,14 @@ class SrtProcessor:
             if min_duration_to_apply_val is not None:
                 current_entry.end_time = max(current_entry.end_time, current_entry.start_time + min_duration_to_apply_val)
 
-            # 最大时长限制（所有模式都应用）
-            if not current_entry.is_intentionally_oversized and current_entry.duration > self.max_duration:
+            # 对白条目：使用宽松上限
+            if current_entry.is_dialogue and not current_entry.is_intentionally_oversized:
+                dialogue_limit = max(self.max_duration, DIALOGUE_MAX_DURATION)
+                if current_entry.duration > dialogue_limit:
+                    current_entry.end_time = current_entry.start_time + dialogue_limit
+
+            # 最大时长限制（所有模式都应用，对白条目已单独处理）
+            if not current_entry.is_intentionally_oversized and not current_entry.is_dialogue and current_entry.duration > self.max_duration:
                 # Mode C特殊处理：尝试对舒适度优化后的超限片段进行分割
                 if processing_mode == "C" and len(current_entry.words_used) > 1:
                     self.log(f"字幕 \"{current_entry.text[:30]}...\" 时长 {current_duration:.2f}s 超出最大值 {self.max_duration}s，尝试特殊分割。")

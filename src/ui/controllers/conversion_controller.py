@@ -21,6 +21,7 @@ class ConversionController(QObject):
     task_started = pyqtSignal()
     task_finished = pyqtSignal(str, bool)
     progress_updated = pyqtSignal(int)
+    upload_progress = pyqtSignal(int, int)  # (bytes_read, total_bytes)
     log_message = pyqtSignal(str)
 
     def __init__(self, config_manager, elevenlabs_client, srt_processor):
@@ -268,6 +269,7 @@ class ConversionController(QObject):
 
         # 连接信号
         self.worker.signals.progress.connect(self.progress_updated)
+        self.worker.signals.upload_progress.connect(self.upload_progress)
         self.worker.signals.log_message.connect(self._handle_worker_log_message)
         self.worker.signals.finished.connect(self._on_worker_finished)
 

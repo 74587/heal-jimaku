@@ -103,6 +103,7 @@ class HealJimakuApp(QMainWindow):
         self.conversion_controller.task_started.connect(self._on_task_started)
         self.conversion_controller.task_finished.connect(self._on_task_finished)
         self.conversion_controller.progress_updated.connect(self.update_progress)
+        self.conversion_controller.upload_progress.connect(self._on_upload_progress)
         self.conversion_controller.log_message.connect(self.log_message)
 
         self.app_icon: Optional[QIcon] = None
@@ -3012,7 +3013,18 @@ class HealJimakuApp(QMainWindow):
 
     def update_progress(self, value: int):
         if self.progress_bar:
+            self.progress_bar.setFormat("%p%")
             self.progress_bar.setValue(value)
+
+    def _on_upload_progress(self, bytes_read: int, total_bytes: int):
+        """处理上传进度信号，在进度条上显示上传百分比。"""
+        if self.progress_bar and total_bytes > 0:
+            percent = int(bytes_read * 100 / total_bytes)
+            self.progress_bar.setValue(percent)
+            if percent >= 100:
+                self.progress_bar.setFormat("等待转录结果...")
+            else:
+                self.progress_bar.setFormat(f"上传中... {percent}%")
 
     @staticmethod
     def show_message_box(parent_widget: Optional[QWidget], title: str, message: str, success: bool):

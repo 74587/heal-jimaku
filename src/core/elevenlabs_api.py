@@ -17,6 +17,7 @@ import wave
 from typing import Optional, Any, Dict, List, Tuple
 
 from mutagen import File as MutagenFile
+from requests_toolbelt import MultipartEncoder, MultipartEncoderMonitor
 
 # ElevenLabs API 常量定义
 # 根据官方文档，STT端点为 /v1/speech-to-text
@@ -44,12 +45,14 @@ DEFAULT_ACCEPT_LANGUAGES = [
     "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,ja;q=0.5"
 ]
 
+
 class ElevenLabsSTTClient:
     """
     ElevenLabs语音转文本API客户端
     """
-    def __init__(self, signals_forwarder: Optional[Any] = None):
+    def __init__(self, signals_forwarder: Optional[Any] = None, upload_progress_callback=None):
         self._signals = signals_forwarder
+        self._upload_progress_callback = upload_progress_callback
 
     def _log(self, message: str):
         if self._signals and hasattr(self._signals, 'log_message') and hasattr(self._signals.log_message, 'emit'):
@@ -306,64 +309,91 @@ class ElevenLabsSTTClient:
             if duration:
                 self._log(f"音频信息: {duration:.2f}s, {file_size:.2f}MB")
 
-            # 发送请求
-            with open(audio_file_path, "rb") as f:
-                # 根据文件扩展名确定MIME类型
-                file_extension = os.path.splitext(audio_file_path)[1].lower()
-                mime_type_map = {
-                    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".flac": "audio/flac",
-                    ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".opus": "audio/opus",
-                    ".aac": "audio/aac", ".webm": "audio/webm", ".mp4": "video/mp4",
-                    ".mov": "video/quicktime"
-                }
-                mime_type = mime_type_map.get(file_extension, 'application/octet-stream')
+            # 根据文件扩展名确定MIME类型
+            file_extension = os.path.splitext(audio_file_path)[1].lower()
+            mime_type_map = {
+                ".mp3": "audio/mpeg", ".wav": "audio/wav", ".flac": "audio/flac",
+                ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".opus": "audio/opus",
+                ".aac": "audio/aac", ".webm": "audio/webm", ".mp4": "video/mp4",
+                ".mov": "video/quicktime"
+            }
+            mime_type = mime_type_map.get(file_extension, 'application/octet-stream')
 
-                files = {"file": (os.path.basename(audio_file_path), f, mime_type)}
+            # 根据文件大小和音频时长动态计算超时时间
+            file_size_bytes = os.path.getsize(audio_file_path)
+            file_size_mb = file_size_bytes / (1024 * 1024)
+            audio_duration, _ = self.get_audio_info(audio_file_path)
 
-                # 添加重试机制 - 修复网络超时问题
-                max_retries = 3
-                retry_delay = 5  # 秒
+            # requests 支持 (connect_timeout, read_timeout) tuple
+            connect_timeout = 30.0 if api_key else 60.0
+            # read_timeout 需要覆盖上传和等待转录结果两个阶段
+            write_estimate = max(120.0, file_size_mb / 0.5 + 60.0)
+            read_estimate = max(600.0, (audio_duration or 300) * 3.0 + 60.0)
+            read_timeout = max(write_estimate, read_estimate)
+            self._log(f"超时设置: 连接={connect_timeout:.0f}s, 读取={read_timeout:.0f}s (音频时长={audio_duration:.1f}s, 文件={file_size_mb:.1f}MB)" if audio_duration else f"超时设置: 连接={connect_timeout:.0f}s, 读取={read_timeout:.0f}s (文件={file_size_mb:.1f}MB)")
 
-                for attempt in range(max_retries):
-                    try:
+            # 添加重试机制 - 每次重试都重新打开文件，避免文件指针问题
+            max_retries = 3
+            retry_delay = 5  # 秒
+
+            for attempt in range(max_retries):
+                try:
+                    # 每次重试都重新打开文件，确保从头读取
+                    with open(audio_file_path, "rb") as f:
+                        # 构建 multipart 表单字段（MultipartEncoder 要求值为字符串或 tuple）
+                        encoder_fields = {k: str(v) for k, v in payload_data.items()}
+                        encoder_fields["file"] = (os.path.basename(audio_file_path), f, mime_type)
+
+                        encoder = MultipartEncoder(fields=encoder_fields)
+
+                        # 用 Monitor 包装，实现真实网络上传进度回调
+                        if self._upload_progress_callback:
+                            cb = self._upload_progress_callback
+                            monitor = MultipartEncoderMonitor(
+                                encoder,
+                                lambda m: cb(m.bytes_read, m.len)
+                            )
+                        else:
+                            monitor = MultipartEncoderMonitor(encoder)
+
+                        # 合并 Content-Type（Monitor 提供 boundary）
+                        req_headers = dict(headers)
+                        req_headers["Content-Type"] = monitor.content_type
+
                         # 根据模式使用不同的发送方式
                         if api_key:
-                            # 付费版：不使用URL参数，只使用表单数据
                             self._log(f"发送付费版请求... (尝试 {attempt + 1}/{max_retries})")
                             response = requests.post(
                                 api_url,
-                                headers=headers,
-                                data=payload_data,
-                                files=files,
-                                timeout=(60, 1800) # 修复：增加连接超时到60秒
+                                headers=req_headers,
+                                data=monitor,
+                                timeout=(connect_timeout, read_timeout)
                             )
                         else:
-                            # 免费版：使用URL参数 + 表单数据，按照原始脚本的方式
                             self._log(f"发送免费版请求... (尝试 {attempt + 1}/{max_retries})")
                             response = requests.post(
                                 api_url,
-                                params=params_data,  # URL参数
-                                headers=headers,
-                                data=payload_data,   # 表单数据
-                                files=files,
-                                timeout=(120, 1800) # 修复：增加连接超时到120秒，应对网络波动
+                                params=params_data,
+                                headers=req_headers,
+                                data=monitor,
+                                timeout=(connect_timeout, read_timeout)
                             )
 
-                        # 如果成功发送，跳出重试循环
-                        break
+                    # 如果成功发送，跳出重试循环
+                    break
 
-                    except (requests.exceptions.Timeout,
-                            requests.exceptions.ConnectionError,
-                            ConnectionError,
-                            TimeoutError) as e:
-                        if attempt < max_retries - 1:  # 不是最后一次尝试
-                            self._log(f"网络超时，{retry_delay}秒后重试... 错误: {str(e)}")
-                            time.sleep(retry_delay)
-                            retry_delay *= 2  # 指数退避：5s, 10s, 20s
-                        else:
-                            # 最后一次尝试失败，重新抛出异常
-                            self._log(f"重试{max_retries}次后仍然失败")
-                            raise
+                except (requests.exceptions.Timeout,
+                        requests.exceptions.ConnectionError,
+                        ConnectionError,
+                        TimeoutError) as e:
+                    if attempt < max_retries - 1:  # 不是最后一次尝试
+                        self._log(f"网络超时，{retry_delay}秒后重试... 错误: {str(e)}")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # 指数退避：5s, 10s, 20s
+                    else:
+                        # 最后一次尝试失败，重新抛出异常
+                        self._log(f"重试{max_retries}次后仍然失败")
+                        raise
 
             if response.status_code == 200:
                 result = response.json()

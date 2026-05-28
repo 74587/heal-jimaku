@@ -38,10 +38,11 @@ class SubtitleEntry:
         self.index = index # 字幕序号
         self.start_time = start_time # 开始时间
         self.end_time = end_time # 结束时间
-        self.text = re.sub(r'\s+', ' ', text).strip() # 文本内容 (去除多余空格并剥离首尾空格)
+        self.text = re.sub(r'[^\S\n]+', ' ', text).strip() # 文本内容 (去除多余空格但保留换行符)
         self.words_used = words_used if words_used else [] # 使用的词对象列表 (用于调试和高级处理)
         self.alignment_ratio = alignment_ratio # 对齐比率 (LLM片段与ASR词的相似度)
         self.is_intentionally_oversized = False # 标记是否故意超限 (例如无法合理分割的长句)
+        self.is_dialogue = False # 对白条目标记 (不参与分割和合并，仅参与时间微调)
 
     @property
     def duration(self):

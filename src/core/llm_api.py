@@ -652,7 +652,8 @@ def call_llm_api_for_segmentation(
     custom_temperature: Optional[float],
     signals_forwarder: Optional[Any] = None, target_language: Optional[str] = None,
     api_format: Optional[str] = None,  # API格式参数
-    thinking_level: int = 0  # 思考模式等级
+    thinking_level: int = 0,  # 思考模式等级
+    is_multi_speaker: bool = False  # 多说话人标记
 ) -> Optional[List[str]]:
     def _log_main_api(message: str):
         _log_api_message(message, signals_forwarder, prefix="[LLM API - Main]")
@@ -708,6 +709,22 @@ def call_llm_api_for_segmentation(
         system_prompt_segmentation = app_config.DEEPSEEK_SYSTEM_PROMPT_EN
     elif detected_lang_code_for_prompt == 'ko': # 增加韩语逻辑
         system_prompt_segmentation = app_config.DEEPSEEK_SYSTEM_PROMPT_KO
+
+    # 3.5 多说话人时追加提醒，让 LLM 不要合并不同说话人的台词
+    if is_multi_speaker:
+        if detected_lang_code_for_prompt == 'ja':
+            system_prompt_segmentation += (
+                "\n\n【多人说话注意】\n"
+                "本段音频包含多人说话。切勿将不同说话人的台词合并到同一行。\n"
+                "例如：「ありがとう。」和「こちらこそ。」如果分别是不同人说的，必须各自成行。"
+            )
+        else:
+            system_prompt_segmentation += (
+                "\n\n[Multiple speakers]\n"
+                "This audio contains multiple speakers. Never merge different speakers' lines into one segment.\n"
+                'For example, "Thank you." and "You\'re welcome." from different speakers must remain separate lines.'
+            )
+        _log_main_api("已注入多人说话提醒到分割提示词")
 
     # 4. 选择摘要用的系统提示词
     # 默认改为 UNIVERSAL
