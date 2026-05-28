@@ -779,7 +779,8 @@ def call_llm_api_for_segmentation(
         )
 
         # 根据模型能力动态确定 max_tokens
-        model_max_tokens = get_max_output_tokens(effective_model)
+        # 断句任务输出不会超过输入长度，限制上限为 16384 避免服务器过度分配资源
+        model_max_tokens = min(get_max_output_tokens(effective_model), 16384)
 
         # [FIX] 根据 API 格式构建请求 - 使用检测后的有效格式
         if effective_api_format == app_config.API_FORMAT_GEMINI:
